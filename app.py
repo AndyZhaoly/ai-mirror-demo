@@ -42,6 +42,7 @@ def start_workflow():
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
+            gr.update(visible=False, value=None),
         )
     elif status == "error":
         return (
@@ -50,6 +51,7 @@ def start_workflow():
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
+            gr.update(visible=False, value=None),
         )
     elif status == "awaiting_user_decision":
         decision = current_workflow_state.get("agent_decision", "")
@@ -79,9 +81,10 @@ def start_workflow():
             gr.update(visible=True, value="✅ 确认出售"),
             gr.update(visible=True, value="❌ 拒绝出售"),
             gr.update(visible=False),
+            gr.update(visible=True, value=item.get("image")),
         )
 
-    return logs, "等待启动...", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+    return logs, "等待启动...", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False, value=None)
 
 
 def approve_sale():
@@ -89,13 +92,13 @@ def approve_sale():
     global current_workflow_state
 
     if not current_workflow_state:
-        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update()
+        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update(), None
 
     # Resume workflow with approval
     final_state = resume_workflow(user_approved=True)
 
     if not final_state:
-        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update()
+        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update(), None
 
     logs = format_logs(final_state.get("log_messages", []))
 
@@ -133,6 +136,7 @@ def approve_sale():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
+        gr.update(visible=True, value=item.get("image")),
     )
 
 
@@ -141,13 +145,13 @@ def reject_sale():
     global current_workflow_state
 
     if not current_workflow_state:
-        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update()
+        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update(), None
 
     # Resume workflow with rejection
     final_state = resume_workflow(user_approved=False)
 
     if not final_state:
-        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update()
+        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update(), None
 
     logs = format_logs(final_state.get("log_messages", []))
 
@@ -179,6 +183,7 @@ def reject_sale():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
+        gr.update(visible=True, value=item.get("image")),
     )
 
 
@@ -193,6 +198,7 @@ def reset_demo():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
+        gr.update(visible=False, value=None),
     )
 
 
@@ -214,13 +220,17 @@ def view_database():
                 "sold": "✅",
             }.get(item.get("status", ""), "❓")
 
+            img_tag = ""
+            if item.get("image"):
+                img_tag = f"<img src='{item['image']}' width='60' style='border-radius:8px;'>"
+
             rows.append(
-                f"| {item['item_id']} | {status_emoji} {item['name']} | "
+                f"| {item['item_id']} | {img_tag} | {status_emoji} {item['name']} | "
                 f"{item['last_worn_days_ago']} 天 | {item['status']} | ¥{item['original_price']} |"
             )
 
-        table = "| ID | 名称 | 未穿天数 | 状态 | 原价 |\n"
-        table += "|---|---|---|---|---|\n"
+        table = "| ID | 图片 | 名称 | 未穿天数 | 状态 | 原价 |\n"
+        table += "|---|---|---|---|---|---|\n"
         table += "\n".join(rows)
 
         return table
@@ -268,6 +278,13 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
 
             mobile_ui = gr.Markdown(
                 "## 📱 FashionClaw App\n\n等待系统检测闲置衣物..."
+            )
+
+            item_image = gr.Image(
+                label="衣物照片",
+                type="filepath",
+                visible=False,
+                height=300,
             )
 
             with gr.Row():
@@ -324,27 +341,27 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
     # Event handlers
     start_btn.click(
         fn=start_workflow,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
     )
 
     approve_btn.click(
         fn=approve_sale,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
     )
 
     reject_btn.click(
         fn=reject_sale,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
     )
 
     restart_btn.click(
         fn=reset_demo,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
     )
 
     reset_btn.click(
         fn=reset_demo,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
     )
 
     refresh_db_btn.click(
