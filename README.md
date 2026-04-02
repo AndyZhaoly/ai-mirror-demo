@@ -147,35 +147,6 @@ python app.py
 
 每次演示系统会按顺序找到第一个符合条件的衣物进行处理。
 
-## 故障排除
-
-### 问题：无法导入langgraph
-
-**解决：** 使用 environment.yml 重新创建环境：
-```bash
-conda env remove -n fashionclaw
-conda env create -f environment.yml
-conda activate fashionclaw
-python app.py
-```
-
-### 问题：数据库被修改后无法重新演示
-
-**解决：** 重置数据库：
-```bash
-python -c "
-import json
-with open('database.json', 'r') as f:
-    db = json.load(f)
-for item in db['wardrobe']:
-    item['status'] = 'in_closet'
-    if 'sold_at' in item:
-        del item['sold_at']
-with open('database.json', 'w') as f:
-    json.dump(db, f, indent=2)
-print('Database reset complete')
-"
-```
 
 ## 许可证
 
