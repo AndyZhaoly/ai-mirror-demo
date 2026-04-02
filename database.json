@@ -1,0 +1,56 @@
+{
+  "wardrobe": [
+    {
+      "item_id": "001",
+      "name": "Blue Denim Jacket",
+      "last_worn_days_ago": 45,
+      "status": "in_closet",
+      "original_price": 299
+    },
+    {
+      "item_id": "002",
+      "name": "Black Leather Boots",
+      "last_worn_days_ago": 120,
+      "status": "in_closet",
+      "original_price": 599
+    },
+    {
+      "item_id": "003",
+      "name": "Red Summer Dress",
+      "last_worn_days_ago": 420,
+      "status": "sold",
+      "original_price": 189,
+      "sold_at": "2026-04-02 11:19:28"
+    },
+    {
+      "item_id": "004",
+      "name": "White Sneakers",
+      "last_worn_days_ago": 15,
+      "status": "in_closet",
+      "original_price": 459
+    },
+    {
+      "item_id": "005",
+      "name": "Vintage Wool Sweater",
+      "last_worn_days_ago": 500,
+      "status": "sold",
+      "original_price": 350,
+      "sold_at": "2026-04-02 11:19:59"
+    },
+    {
+      "item_id": "006",
+      "name": "Gray Hoodie",
+      "last_worn_days_ago": 7,
+      "status": "in_closet",
+      "original_price": 199
+    },
+    {
+      "item_id": "007",
+      "name": "Brown Leather Belt",
+      "last_worn_days_ago": 380,
+      "status": "sold",
+      "original_price": 89,
+      "sold_at": "2026-04-02 11:21:30"
+    }
+  ]
+}
