@@ -56,7 +56,7 @@ def start_workflow():
     if status == "no_items_found":
         return (
             logs,
-            "## ℹ️ 系统通知\n\n暂无闲置衣物需要处理。所有衣物都在正常使用中！",
+            "<h2>ℹ️ 系统通知</h2><p>暂无闲置衣物需要处理。所有衣物都在正常使用中！</p>",
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
@@ -64,7 +64,7 @@ def start_workflow():
     elif status == "error":
         return (
             logs,
-            "## ❌ 系统错误\n\n处理过程中出现错误，请查看日志。",
+            "<h2>❌ 系统错误</h2><p>处理过程中出现错误，请查看日志。</p>",
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
@@ -73,29 +73,30 @@ def start_workflow():
         decision = current_workflow_state.get("agent_decision", "")
         item = current_workflow_state.get("current_item", {})
 
-        img_md = ""
+        img_html = ""
         b64 = img_to_base64(item.get("image"))
         if b64:
-            img_md = f"<img src='{b64}' style='max-height:220px; border-radius:12px; margin-bottom:12px;'>\n\n"
+            img_html = f"<img src='{b64}' style='max-height:220px; border-radius:12px; margin-bottom:12px;'>"
 
         mobile_ui = f"""
-## 📱 FashionClaw App
-
-### 🔔 闲置衣物处理通知
-
-{img_md}
-{decision}
-
----
-
-**👕 衣物详情:**
-- 名称: {item.get('name', 'N/A')}
-- 闲置天数: {item.get('last_worn_days_ago', 'N/A')} 天
-- 原价: ¥{item.get('original_price', 'N/A')}
-
-**💵 交易详情:**
-- 买家出价: ¥{current_workflow_state.get('buyer_offer', {}).get('offer_price', 'N/A')}
-- 平台: {current_workflow_state.get('buyer_offer', {}).get('platform', 'N/A')}
+<div>
+<h2>📱 FashionClaw App</h2>
+<h3>🔔 闲置衣物处理通知</h3>
+{img_html}
+<div style="margin:12px 0;">{decision.replace(chr(10), '<br>')}</div>
+<hr>
+<p><strong>👕 衣物详情:</strong></p>
+<ul>
+<li>名称: {item.get('name', 'N/A')}</li>
+<li>闲置天数: {item.get('last_worn_days_ago', 'N/A')} 天</li>
+<li>原价: ¥{item.get('original_price', 'N/A')}</li>
+</ul>
+<p><strong>💵 交易详情:</strong></p>
+<ul>
+<li>买家出价: ¥{current_workflow_state.get('buyer_offer', {}).get('offer_price', 'N/A')}</li>
+<li>平台: {current_workflow_state.get('buyer_offer', {}).get('platform', 'N/A')}</li>
+</ul>
+</div>
 """
         return (
             logs,
@@ -105,7 +106,7 @@ def start_workflow():
             gr.update(visible=False),
         )
 
-    return logs, "等待启动...", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+    return logs, "<p>等待启动...</p>", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
 
 def approve_sale():
@@ -128,33 +129,29 @@ def approve_sale():
     buyer = final_state.get("buyer_offer", {}).get("buyer_name", "N/A")
     price = final_state.get("buyer_offer", {}).get("offer_price", "N/A")
 
-    img_md = ""
+    img_html = ""
     b64 = img_to_base64(item.get("image"))
     if b64:
-        img_md = f"<img src='{b64}' style='max-height:180px; border-radius:12px; margin-bottom:12px;'>\n\n"
+        img_html = f"<img src='{b64}' style='max-height:180px; border-radius:12px; margin-bottom:12px;'>"
 
     success_ui = f"""
-## ✅ 交易成功！
-
-{img_md}
-您的衣物已成功售出！
-
----
-
-### 📦 交易详情
-
-| 项目 | 内容 |
-|------|------|
-| 衣物 | {item.get('name', 'N/A')} |
-| 成交价 | ¥{price} |
-| 买家 | {buyer} |
-| 物流公司 | {tracking.get('carrier', 'N/A')} |
-| 运单号 | **{tracking.get('tracking_number', 'N/A')}** |
-| 预计送达 | {tracking.get('estimated_delivery', 'N/A')} |
-
----
-
-🎉 感谢您的使用！物流信息已同步至您的账户。
+<div>
+<h2>✅ 交易成功！</h2>
+{img_html}
+<p>您的衣物已成功售出！</p>
+<hr>
+<h3>📦 交易详情</h3>
+<table border="0" cellpadding="4">
+<tr><td><strong>衣物</strong></td><td>{item.get('name', 'N/A')}</td></tr>
+<tr><td><strong>成交价</strong></td><td>¥{price}</td></tr>
+<tr><td><strong>买家</strong></td><td>{buyer}</td></tr>
+<tr><td><strong>物流公司</strong></td><td>{tracking.get('carrier', 'N/A')}</td></tr>
+<tr><td><strong>运单号</strong></td><td><strong>{tracking.get('tracking_number', 'N/A')}</strong></td></tr>
+<tr><td><strong>预计送达</strong></td><td>{tracking.get('estimated_delivery', 'N/A')}</td></tr>
+</table>
+<hr>
+<p>🎉 感谢您的使用！物流信息已同步至您的账户。</p>
+</div>
 """
 
     return (
@@ -183,30 +180,27 @@ def reject_sale():
 
     item = current_workflow_state.get("current_item", {})
 
-    img_md = ""
+    img_html = ""
     b64 = img_to_base64(item.get("image"))
     if b64:
-        img_md = f"<img src='{b64}' style='max-height:180px; border-radius:12px; margin-bottom:12px;'><br><br>"
+        img_html = f"<img src='{b64}' style='max-height:180px; border-radius:12px; margin-bottom:12px;'>"
 
     reject_ui = f"""
-## ❌ 已拒绝出售
-
-{img_md}
-您已选择保留这件衣物。
-
----
-
-**👕 衣物信息:**
-- 名称: {item.get('name', 'N/A')}
-- 状态: 继续保留在衣橱中
-
-💡 **小贴士:**
-建议在未来30天内穿着一次，
-否则系统将重新推荐出售。
-
----
-
-衣物已标记为"保留"，短期内不会再次推荐出售。
+<div>
+<h2>❌ 已拒绝出售</h2>
+{img_html}
+<p>您已选择保留这件衣物。</p>
+<hr>
+<p><strong>👕 衣物信息:</strong></p>
+<ul>
+<li>名称: {item.get('name', 'N/A')}</li>
+<li>状态: 继续保留在衣橱中</li>
+</ul>
+<p><strong>💡 小贴士:</strong></p>
+<p>建议在未来30天内穿着一次，<br>否则系统将重新推荐出售。</p>
+<hr>
+<p>衣物已标记为"保留"，短期内不会再次推荐出售。</p>
+</div>
 """
 
     return (
@@ -225,7 +219,7 @@ def reset_demo():
 
     return (
         "点击「启动智能衣橱系统」开始演示...",
-        "## 📱 FashionClaw App\n\n等待系统检测闲置衣物...",
+        "<h2>📱 FashionClaw App</h2><p>等待系统检测闲置衣物...</p>",
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
@@ -256,13 +250,17 @@ def view_database():
                 img_tag = f"<img src='{b64}' width='60' style='border-radius:8px;'>"
 
             rows.append(
-                f"| {item['item_id']} | {img_tag} | {status_emoji} {item['name']} | "
-                f"{item['last_worn_days_ago']} 天 | {item['status']} | ¥{item['original_price']} |"
+                f"<tr><td>{item['item_id']}</td><td>{img_tag}</td>"
+                f"<td>{status_emoji} {item['name']}</td>"
+                f"<td>{item['last_worn_days_ago']} 天</td>"
+                f"<td>{item['status']}</td>"
+                f"<td>¥{item['original_price']}</td></tr>"
             )
 
-        table = "| ID | 图片 | 名称 | 未穿天数 | 状态 | 原价 |\n"
-        table += "|---|---|---|---|---|---|\n"
-        table += "\n".join(rows)
+        table = "<table border='1' cellpadding='6' style='border-collapse:collapse;width:100%;'>"
+        table += "<tr><th>ID</th><th>图片</th><th>名称</th><th>未穿天数</th><th>状态</th><th>原价</th></tr>"
+        table += "".join(rows)
+        table += "</table>"
 
         return table
 
@@ -300,15 +298,15 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
 
             gr.Markdown("---")
             gr.Markdown("### 🗄️ 当前数据库状态")
-            db_view = gr.Markdown("点击「刷新数据库」查看...")
+            db_view = gr.HTML("<p>点击「刷新数据库」查看...</p>")
             refresh_db_btn = gr.Button("🔄 刷新数据库")
 
         # Right Column: Mobile App Mockup
         with gr.Column(scale=1):
             gr.Markdown("### 📱 移动端 App 界面")
 
-            mobile_ui = gr.Markdown(
-                "## 📱 FashionClaw App\n\n等待系统检测闲置衣物..."
+            mobile_ui = gr.HTML(
+                "<h2>📱 FashionClaw App</h2><p>等待系统检测闲置衣物...</p>"
             )
 
             with gr.Row():
