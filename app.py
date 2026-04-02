@@ -3,6 +3,9 @@ FashionClaw Gradio Demo Application
 Two-panel dashboard simulating backend agent and mobile app UI.
 """
 import json
+import base64
+from pathlib import Path
+from PIL import Image
 import gradio as gr
 from workflow import (
     workflow_app,
@@ -13,6 +16,32 @@ from workflow import (
 
 # Global state for the demo
 current_workflow_state = None
+
+
+def load_item_image(path: str):
+    """Load image as PIL Image for Gradio, or None if missing."""
+    if not path:
+        return None
+    try:
+        return Image.open(path)
+    except Exception:
+        return None
+
+
+def img_to_base64(path: str) -> str:
+    """Convert local image file to base64 data URI for Markdown."""
+    if not path:
+        return ""
+    try:
+        ext = Path(path).suffix.lstrip(".").lower()
+        if ext == "jpg":
+            ext = "jpeg"
+        with open(path, "rb") as f:
+            data = f.read()
+        b64 = base64.b64encode(data).decode("utf-8")
+        return f"data:image/{ext};base64,{b64}"
+    except Exception:
+        return ""
 
 
 def format_logs(log_messages):
@@ -42,7 +71,7 @@ def start_workflow():
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
-            gr.update(visible=False, value=None),
+            None,
         )
     elif status == "error":
         return (
@@ -51,7 +80,7 @@ def start_workflow():
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
-            gr.update(visible=False, value=None),
+            None,
         )
     elif status == "awaiting_user_decision":
         decision = current_workflow_state.get("agent_decision", "")
@@ -81,10 +110,10 @@ def start_workflow():
             gr.update(visible=True, value="✅ 确认出售"),
             gr.update(visible=True, value="❌ 拒绝出售"),
             gr.update(visible=False),
-            gr.update(visible=True, value=item.get("image")),
+            gr.update(visible=True, value=load_item_image(item.get("image"))),
         )
 
-    return logs, "等待启动...", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False, value=None)
+    return logs, "等待启动...", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), None
 
 
 def approve_sale():
@@ -136,7 +165,7 @@ def approve_sale():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
-        gr.update(visible=True, value=item.get("image")),
+        gr.update(visible=True, value=load_item_image(item.get("image"))),
     )
 
 
@@ -183,7 +212,7 @@ def reject_sale():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
-        gr.update(visible=True, value=item.get("image")),
+        gr.update(visible=True, value=load_item_image(item.get("image"))),
     )
 
 
@@ -198,7 +227,7 @@ def reset_demo():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
-        gr.update(visible=False, value=None),
+        None,
     )
 
 
@@ -221,8 +250,9 @@ def view_database():
             }.get(item.get("status", ""), "❓")
 
             img_tag = ""
-            if item.get("image"):
-                img_tag = f"<img src='{item['image']}' width='60' style='border-radius:8px;'>"
+            b64 = img_to_base64(item.get("image"))
+            if b64:
+                img_tag = f"<img src='{b64}' width='60' style='border-radius:8px;'>"
 
             rows.append(
                 f"| {item['item_id']} | {img_tag} | {status_emoji} {item['name']} | "
@@ -282,7 +312,7 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
 
             item_image = gr.Image(
                 label="衣物照片",
-                type="filepath",
+                type="pil",
                 visible=False,
                 height=300,
             )
