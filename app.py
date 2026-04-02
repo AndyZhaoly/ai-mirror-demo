@@ -5,7 +5,6 @@ Two-panel dashboard simulating backend agent and mobile app UI.
 import json
 import base64
 from pathlib import Path
-from PIL import Image
 import gradio as gr
 from workflow import (
     workflow_app,
@@ -16,16 +15,6 @@ from workflow import (
 
 # Global state for the demo
 current_workflow_state = None
-
-
-def load_item_image(path: str):
-    """Load image as PIL Image for Gradio, or None if missing."""
-    if not path:
-        return None
-    try:
-        return Image.open(path)
-    except Exception:
-        return None
 
 
 def img_to_base64(path: str) -> str:
@@ -71,7 +60,6 @@ def start_workflow():
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
-            None,
         )
     elif status == "error":
         return (
@@ -80,17 +68,22 @@ def start_workflow():
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
-            None,
         )
     elif status == "awaiting_user_decision":
         decision = current_workflow_state.get("agent_decision", "")
         item = current_workflow_state.get("current_item", {})
+
+        img_md = ""
+        b64 = img_to_base64(item.get("image"))
+        if b64:
+            img_md = f"<img src='{b64}' style='max-height:220px; border-radius:12px; margin-bottom:12px;'>\n\n"
 
         mobile_ui = f"""
 ## 📱 FashionClaw App
 
 ### 🔔 闲置衣物处理通知
 
+{img_md}
 {decision}
 
 ---
@@ -110,10 +103,9 @@ def start_workflow():
             gr.update(visible=True, value="✅ 确认出售"),
             gr.update(visible=True, value="❌ 拒绝出售"),
             gr.update(visible=False),
-            gr.update(visible=True, value=load_item_image(item.get("image"))),
         )
 
-    return logs, "等待启动...", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), None
+    return logs, "等待启动...", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
 
 def approve_sale():
@@ -121,13 +113,13 @@ def approve_sale():
     global current_workflow_state
 
     if not current_workflow_state:
-        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update(), None
+        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update()
 
     # Resume workflow with approval
     final_state = resume_workflow(user_approved=True)
 
     if not final_state:
-        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update(), None
+        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update()
 
     logs = format_logs(final_state.get("log_messages", []))
 
@@ -136,9 +128,15 @@ def approve_sale():
     buyer = final_state.get("buyer_offer", {}).get("buyer_name", "N/A")
     price = final_state.get("buyer_offer", {}).get("offer_price", "N/A")
 
+    img_md = ""
+    b64 = img_to_base64(item.get("image"))
+    if b64:
+        img_md = f"<img src='{b64}' style='max-height:180px; border-radius:12px; margin-bottom:12px;'>\n\n"
+
     success_ui = f"""
 ## ✅ 交易成功！
 
+{img_md}
 您的衣物已成功售出！
 
 ---
@@ -165,7 +163,6 @@ def approve_sale():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
-        gr.update(visible=True, value=load_item_image(item.get("image"))),
     )
 
 
@@ -174,21 +171,27 @@ def reject_sale():
     global current_workflow_state
 
     if not current_workflow_state:
-        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update(), None
+        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update()
 
     # Resume workflow with rejection
     final_state = resume_workflow(user_approved=False)
 
     if not final_state:
-        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update(), None
+        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update()
 
     logs = format_logs(final_state.get("log_messages", []))
 
     item = current_workflow_state.get("current_item", {})
 
+    img_md = ""
+    b64 = img_to_base64(item.get("image"))
+    if b64:
+        img_md = f"<img src='{b64}' style='max-height:180px; border-radius:12px; margin-bottom:12px;'><br><br>"
+
     reject_ui = f"""
 ## ❌ 已拒绝出售
 
+{img_md}
 您已选择保留这件衣物。
 
 ---
@@ -212,7 +215,6 @@ def reject_sale():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
-        gr.update(visible=True, value=load_item_image(item.get("image"))),
     )
 
 
@@ -227,7 +229,6 @@ def reset_demo():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
-        None,
     )
 
 
@@ -310,13 +311,6 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
                 "## 📱 FashionClaw App\n\n等待系统检测闲置衣物..."
             )
 
-            item_image = gr.Image(
-                label="衣物照片",
-                type="pil",
-                visible=False,
-                height=300,
-            )
-
             with gr.Row():
                 approve_btn = gr.Button(
                     "✅ 确认出售",
@@ -371,27 +365,27 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
     # Event handlers
     start_btn.click(
         fn=start_workflow,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
     )
 
     approve_btn.click(
         fn=approve_sale,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
     )
 
     reject_btn.click(
         fn=reject_sale,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
     )
 
     restart_btn.click(
         fn=reset_demo,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
     )
 
     reset_btn.click(
         fn=reset_demo,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn, item_image],
+        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
     )
 
     refresh_db_btn.click(
