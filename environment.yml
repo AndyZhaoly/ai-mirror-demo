@@ -1,0 +1,11 @@
+name: fashionclaw
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - gradio>=4.0.0
+    - langgraph>=0.0.50
+    - langchain-core>=0.1.0
