@@ -16,6 +16,68 @@ from workflow import (
 # Global state for the demo
 current_workflow_state = None
 
+# Original demo database (used to reset on "重新开始")
+INITIAL_DATABASE = {
+    "wardrobe": [
+        {
+            "item_id": "001",
+            "name": "Blue Denim Jacket",
+            "last_worn_days_ago": 45,
+            "status": "in_closet",
+            "original_price": 299,
+            "image": "images/denim_jacket.jpg",
+        },
+        {
+            "item_id": "002",
+            "name": "Red Summer Dress",
+            "last_worn_days_ago": 420,
+            "status": "in_closet",
+            "original_price": 189,
+            "image": "images/red_dress.jpg",
+        },
+        {
+            "item_id": "003",
+            "name": "Vintage Wool Sweater",
+            "last_worn_days_ago": 500,
+            "status": "in_closet",
+            "original_price": 350,
+            "image": "images/wool_sweater.jpg",
+        },
+        {
+            "item_id": "004",
+            "name": "Brown Leather Belt",
+            "last_worn_days_ago": 380,
+            "status": "in_closet",
+            "original_price": 89,
+            "image": "images/leather_belt.jpg",
+        },
+        {
+            "item_id": "005",
+            "name": "Black Slim Trousers",
+            "last_worn_days_ago": 120,
+            "status": "in_closet",
+            "original_price": 259,
+            "image": "images/black_trousers.jpg",
+        },
+        {
+            "item_id": "006",
+            "name": "White Linen Shirt",
+            "last_worn_days_ago": 15,
+            "status": "in_closet",
+            "original_price": 179,
+            "image": "images/white_shirt.jpg",
+        },
+        {
+            "item_id": "007",
+            "name": "Green Bomber Jacket",
+            "last_worn_days_ago": 200,
+            "status": "in_closet",
+            "original_price": 499,
+            "image": "images/green_bomber.jpg",
+        },
+    ]
+}
+
 
 def img_to_base64(path: str) -> str:
     """Convert local image file to base64 data URI for Markdown."""
@@ -216,6 +278,13 @@ def reset_demo():
     """Reset the demo to initial state."""
     global current_workflow_state
     current_workflow_state = None
+
+    # Restore the database so previous sales don't exhaust the demo
+    try:
+        with open("database.json", "w", encoding="utf-8") as f:
+            json.dump(INITIAL_DATABASE, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Warning: failed to reset database: {e}")
 
     return (
         "点击「启动智能衣橱系统」开始演示...",
