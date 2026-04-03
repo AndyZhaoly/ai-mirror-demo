@@ -11,6 +11,7 @@ from workflow import (
     create_initial_state,
     run_workflow_until_user_input,
     resume_workflow,
+    reset_workflow,
 )
 
 # Global state for the demo
@@ -79,20 +80,51 @@ INITIAL_DATABASE = {
 }
 
 
-def img_to_base64(path: str) -> str:
-    """Convert local image file to base64 data URI for Markdown."""
+def img_to_base64(path: str, max_width: int = 400) -> str:
+    """Convert local image file to resized base64 data URI for HTML rendering."""
     if not path:
         return ""
     try:
+        from PIL import Image
+
+        img = Image.open(path)
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_size = (max_width, int(img.height * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+
         ext = Path(path).suffix.lstrip(".").lower()
         if ext == "jpg":
             ext = "jpeg"
-        with open(path, "rb") as f:
-            data = f.read()
-        b64 = base64.b64encode(data).decode("utf-8")
-        return f"data:image/{ext};base64,{b64}"
-    except Exception:
+        fmt = ext.upper() if ext in {"jpeg", "png", "gif", "webp", "bmp"} else "JPEG"
+
+        from io import BytesIO
+
+        buffer = BytesIO()
+        img.save(buffer, format=fmt)
+        b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        mime = "jpeg" if ext == "jpg" else (ext if ext else "jpeg")
+        return f"data:image/{mime};base64,{b64}"
+    except Exception as e:
+        print(f"[img_to_base64] Failed to encode {path}: {e}")
         return ""
+
+
+def load_pil_image(path: str, max_width: int = 300):
+    """Load and resize a local image as a PIL Image for Gradio."""
+    if not path:
+        return None
+    try:
+        from PIL import Image
+        img = Image.open(path)
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_size = (max_width, int(img.height * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+        return img
+    except Exception as e:
+        print(f"[load_pil_image] Failed to open {path}: {e}")
+        return None
 
 
 def format_logs(log_messages):
@@ -119,6 +151,7 @@ def start_workflow():
         return (
             logs,
             "<h2>ℹ️ 系统通知</h2><p>暂无闲置衣物需要处理。所有衣物都在正常使用中！</p>",
+            None,
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
@@ -127,6 +160,7 @@ def start_workflow():
         return (
             logs,
             "<h2>❌ 系统错误</h2><p>处理过程中出现错误，请查看日志。</p>",
+            None,
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
@@ -135,16 +169,10 @@ def start_workflow():
         decision = current_workflow_state.get("agent_decision", "")
         item = current_workflow_state.get("current_item", {})
 
-        img_html = ""
-        b64 = img_to_base64(item.get("image"))
-        if b64:
-            img_html = f"<img src='{b64}' style='max-height:220px; border-radius:12px; margin-bottom:12px;'>"
-
         mobile_ui = f"""
 <div>
 <h2>📱 FashionClaw App</h2>
 <h3>🔔 闲置衣物处理通知</h3>
-{img_html}
 <div style="margin:12px 0;">{decision.replace(chr(10), '<br>')}</div>
 <hr>
 <p><strong>👕 衣物详情:</strong></p>
@@ -163,12 +191,13 @@ def start_workflow():
         return (
             logs,
             mobile_ui,
+            load_pil_image(item.get("image")),
             gr.update(visible=True, value="✅ 确认出售"),
             gr.update(visible=True, value="❌ 拒绝出售"),
             gr.update(visible=False),
         )
 
-    return logs, "<p>等待启动...</p>", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+    return logs, "<p>等待启动...</p>", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
 
 def approve_sale():
@@ -176,13 +205,13 @@ def approve_sale():
     global current_workflow_state
 
     if not current_workflow_state:
-        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update()
+        return "请先启动工作流", "错误：工作流未启动", None, gr.update(), gr.update(), gr.update()
 
     # Resume workflow with approval
     final_state = resume_workflow(user_approved=True)
 
     if not final_state:
-        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update()
+        return "错误：无法恢复工作流", "错误：状态丢失", None, gr.update(), gr.update(), gr.update()
 
     logs = format_logs(final_state.get("log_messages", []))
 
@@ -191,15 +220,9 @@ def approve_sale():
     buyer = final_state.get("buyer_offer", {}).get("buyer_name", "N/A")
     price = final_state.get("buyer_offer", {}).get("offer_price", "N/A")
 
-    img_html = ""
-    b64 = img_to_base64(item.get("image"))
-    if b64:
-        img_html = f"<img src='{b64}' style='max-height:180px; border-radius:12px; margin-bottom:12px;'>"
-
     success_ui = f"""
 <div>
 <h2>✅ 交易成功！</h2>
-{img_html}
 <p>您的衣物已成功售出！</p>
 <hr>
 <h3>📦 交易详情</h3>
@@ -219,6 +242,7 @@ def approve_sale():
     return (
         logs,
         success_ui,
+        load_pil_image(item.get("image")),
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
@@ -230,27 +254,21 @@ def reject_sale():
     global current_workflow_state
 
     if not current_workflow_state:
-        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update()
+        return "请先启动工作流", "错误：工作流未启动", None, gr.update(), gr.update(), gr.update()
 
     # Resume workflow with rejection
     final_state = resume_workflow(user_approved=False)
 
     if not final_state:
-        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update()
+        return "错误：无法恢复工作流", "错误：状态丢失", None, gr.update(), gr.update(), gr.update()
 
     logs = format_logs(final_state.get("log_messages", []))
 
     item = current_workflow_state.get("current_item", {})
 
-    img_html = ""
-    b64 = img_to_base64(item.get("image"))
-    if b64:
-        img_html = f"<img src='{b64}' style='max-height:180px; border-radius:12px; margin-bottom:12px;'>"
-
     reject_ui = f"""
 <div>
 <h2>❌ 已拒绝出售</h2>
-{img_html}
 <p>您已选择保留这件衣物。</p>
 <hr>
 <p><strong>👕 衣物信息:</strong></p>
@@ -268,6 +286,7 @@ def reject_sale():
     return (
         logs,
         reject_ui,
+        load_pil_image(item.get("image")),
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
@@ -286,9 +305,16 @@ def reset_demo():
     except Exception as e:
         print(f"Warning: failed to reset database: {e}")
 
+    # Reset LangGraph checkpoint memory
+    try:
+        reset_workflow()
+    except Exception as e:
+        print(f"Warning: failed to reset workflow checkpoint: {e}")
+
     return (
         "点击「启动智能衣橱系统」开始演示...",
         "<h2>📱 FashionClaw App</h2><p>等待系统检测闲置衣物...</p>",
+        gr.update(value=None),
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
@@ -378,6 +404,16 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
                 "<h2>📱 FashionClaw App</h2><p>等待系统检测闲置衣物...</p>"
             )
 
+            item_image = gr.Image(
+                label="衣物图片",
+                visible=True,
+                height=260,
+                show_label=False,
+                container=False,
+                interactive=False,
+                value=None,
+            )
+
             with gr.Row():
                 approve_btn = gr.Button(
                     "✅ 确认出售",
@@ -432,33 +468,40 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
     # Event handlers
     start_btn.click(
         fn=start_workflow,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
     )
 
     approve_btn.click(
         fn=approve_sale,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
     )
 
     reject_btn.click(
         fn=reject_sale,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
     )
 
     restart_btn.click(
         fn=reset_demo,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
     )
 
     reset_btn.click(
         fn=reset_demo,
-        outputs=[log_output, mobile_ui, approve_btn, reject_btn, restart_btn],
+        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
     )
 
     refresh_db_btn.click(
         fn=view_database,
         outputs=db_view,
     )
+
+# Always start with a fresh database on module load so previous demo runs don't pollute state
+try:
+    with open("database.json", "w", encoding="utf-8") as f:
+        json.dump(INITIAL_DATABASE, f, ensure_ascii=False, indent=2)
+except Exception as e:
+    print(f"Warning: failed to auto-reset database on startup: {e}")
 
 if __name__ == "__main__":
     demo.launch(share=False)
