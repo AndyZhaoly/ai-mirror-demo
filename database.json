@@ -55,6 +55,54 @@
       "status": "in_closet",
       "original_price": 499,
       "image": "images/green_bomber.jpg"
+    },
+    {
+      "item_id": "A9AE5A87",
+      "name": "提取的上衣_1",
+      "clothing_type": "upper",
+      "date_added": "2026-04-04T20:41:07.479210",
+      "purchase_date": "2025-03-17",
+      "last_worn_date": "2025-03-17",
+      "status": "in_closet",
+      "original_price": 440,
+      "image": "./extracted_clothes/upper_0_0404_204107.png",
+      "extracted_from": "temp_upload.jpg"
+    },
+    {
+      "item_id": "5A9F31F8",
+      "name": "提取的上衣_2",
+      "clothing_type": "upper",
+      "date_added": "2026-04-04T20:41:07.565056",
+      "purchase_date": "2025-03-02",
+      "last_worn_date": "2025-03-02",
+      "status": "in_closet",
+      "original_price": 320,
+      "image": "./extracted_clothes/upper_1_0404_204107.png",
+      "extracted_from": "temp_upload.jpg"
+    },
+    {
+      "item_id": "EDC1F1D8",
+      "name": "提取的下装_1",
+      "clothing_type": "lower",
+      "date_added": "2026-04-04T20:41:07.706477",
+      "purchase_date": "2025-02-27",
+      "last_worn_date": "2025-02-27",
+      "status": "in_closet",
+      "original_price": 208,
+      "image": "./extracted_clothes/lower_0_0404_204107.png",
+      "extracted_from": "temp_upload.jpg"
+    },
+    {
+      "item_id": "FA58E495",
+      "name": "提取的下装_2",
+      "clothing_type": "lower",
+      "date_added": "2026-04-04T20:41:07.847273",
+      "purchase_date": "2025-03-02",
+      "last_worn_date": "2025-03-02",
+      "status": "in_closet",
+      "original_price": 300,
+      "image": "./extracted_clothes/lower_1_0404_204107.png",
+      "extracted_from": "temp_upload.jpg"
     }
   ]
 }

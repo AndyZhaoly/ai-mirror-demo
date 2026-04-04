@@ -342,6 +342,17 @@ async def extract_upper_body(
         # Concatenate all boxes
         combined_boxes = torch.cat(all_boxes, dim=0)
         
+        # Limit to top 2 results by confidence (select best matches)
+        MAX_RESULTS = 2
+        if len(combined_boxes) > MAX_RESULTS:
+            # Get indices of top confidences
+            top_indices = sorted(range(len(all_confidences)),
+                                key=lambda i: all_confidences[i],
+                                reverse=True)[:MAX_RESULTS]
+            combined_boxes = combined_boxes[top_indices]
+            all_phrases = [all_phrases[i] for i in top_indices]
+            all_confidences = [all_confidences[i] for i in top_indices]
+        
         # Segment objects
         result_images = segment_with_sam(sam_predictor, img_array, combined_boxes, white_background)
         
@@ -411,6 +422,17 @@ async def extract_lower_body(
         
         # Concatenate all boxes
         combined_boxes = torch.cat(all_boxes, dim=0)
+        
+        # Limit to top 2 results by confidence (select best matches)
+        MAX_RESULTS = 2
+        if len(combined_boxes) > MAX_RESULTS:
+            # Get indices of top confidences
+            top_indices = sorted(range(len(all_confidences)),
+                                key=lambda i: all_confidences[i],
+                                reverse=True)[:MAX_RESULTS]
+            combined_boxes = combined_boxes[top_indices]
+            all_phrases = [all_phrases[i] for i in top_indices]
+            all_confidences = [all_confidences[i] for i in top_indices]
         
         # Segment objects
         result_images = segment_with_sam(sam_predictor, img_array, combined_boxes, white_background)
