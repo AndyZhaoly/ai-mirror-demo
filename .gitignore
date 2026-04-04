@@ -59,3 +59,27 @@ dmypy.json
 *.log
 flagged/
 gradio_cached_examples/
+.gradio/
+
+# Model files (too large for GitHub)
+models/
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Generated / Runtime files
+extracted_clothes/
+temp_upload.jpg
+temp_*.jpg
+temp_*.png
+
+# Database (runtime mutable)
+database.json
+
+# Demo images (potential copyright issues)
+images/*.jpg
+images/*.jpeg
+images/*.png
+images/*.webp
+!images/.gitkeep

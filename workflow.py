@@ -17,6 +17,7 @@ from mock_apis import (
     execute_logistics,
     update_item_status,
 )
+from database_manager import is_stagnant
 
 
 class WorkflowState(TypedDict):
@@ -189,6 +190,47 @@ def wait_for_user_node(state: WorkflowState) -> WorkflowState:
     return state
 
 
+def stagnancy_check_node(state: WorkflowState) -> WorkflowState:
+    """
+    Stagnancy Check Node: Checks if the current item is stagnant (>365 days).
+    Called immediately after adding a new item from upload.
+    """
+    item = state.get("current_item")
+    if not item:
+        add_log(state, "❌ 错误: 没有物品可检查")
+        state["status"] = "error"
+        return state
+
+    add_log(state, f"🔍 检查物品闲置状态: {item['name']}")
+
+    # Check for both old format (last_worn_days_ago) and new format (purchase_date)
+    is_item_stagnant = False
+    days_since = 0
+    
+    if "purchase_date" in item and item["purchase_date"]:
+        # New format - use is_stagnant function
+        is_item_stagnant = is_stagnant(item, threshold_days=365)
+        if is_item_stagnant:
+            try:
+                days_since = (datetime.now() - datetime.strptime(item['purchase_date'][:10], "%Y-%m-%d")).days
+            except:
+                days_since = 400  # Fallback
+    elif "last_worn_days_ago" in item:
+        # Old format - directly check days
+        days_since = item["last_worn_days_ago"]
+        is_item_stagnant = days_since > 365
+
+    if is_item_stagnant:
+        add_log(state, f"⚠️ 发现闲置物品！已 {days_since} 天未穿着")
+        add_log(state, f"💡 触发出售建议...")
+        state["status"] = "item_stagnant"
+    else:
+        add_log(state, f"✅ 物品状态正常，无需处理")
+        state["status"] = "item_fresh"
+
+    return state
+
+
 def execute_node(state: WorkflowState) -> WorkflowState:
     """
     Execute Node: Completes the sale and arranges logistics.
@@ -350,3 +392,51 @@ def resume_workflow(user_approved: bool):
             final_state = value
 
     return final_state
+
+
+# ========== Upload Flow Functions ==========
+
+def create_state_for_item(item: dict) -> WorkflowState:
+    """Create workflow state for a specific item (used in upload flow)."""
+    state = create_initial_state()
+    state["current_item"] = item
+    return state
+
+
+def run_upload_workflow(item: dict) -> WorkflowState:
+    """
+    Run workflow for a newly uploaded item:
+    stagnancy check -> if stagnant -> evaluate -> wait for user -> execute
+    """
+    state = create_state_for_item(item)
+
+    # Step 1: Check stagnancy
+    state = stagnancy_check_node(state)
+
+    if state["status"] == "item_stagnant":
+        # Step 2: Evaluate (market price, buyer, etc.)
+        state = evaluate_node(state)
+        return state
+    else:
+        # Item is fresh, no need to sell
+        return state
+
+
+def run_upload_workflow_until_user_input(item: dict) -> WorkflowState:
+    """
+    Run upload workflow until it needs user input.
+    Returns state at the user decision point.
+    """
+    state = run_upload_workflow(item)
+    
+    # Save state to workflow_app for resume_workflow to work
+    # Update the state in the checkpoint
+    try:
+        workflow_app.update_state(
+            {"configurable": {"thread_id": "fashionclaw_demo"}},
+            state,
+        )
+    except Exception as e:
+        print(f"Warning: failed to save workflow state: {e}")
+    
+    return state

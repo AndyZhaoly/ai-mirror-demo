@@ -4,6 +4,7 @@ Two-panel dashboard simulating backend agent and mobile app UI.
 """
 import json
 import base64
+import os
 from pathlib import Path
 import gradio as gr
 from workflow import (
@@ -12,6 +13,12 @@ from workflow import (
     run_workflow_until_user_input,
     resume_workflow,
     reset_workflow,
+    run_upload_workflow_until_user_input,
+)
+from database_manager import (
+    add_item,
+    is_stagnant,
+    list_all_items,
 )
 from gsam_client import GSAMClient
 from PIL import Image
@@ -161,7 +168,6 @@ def start_workflow():
         return (
             logs,
             "<h2>ℹ️ 系统通知</h2><p>暂无闲置衣物需要处理。所有衣物都在正常使用中！</p>",
-            None,
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
@@ -170,7 +176,6 @@ def start_workflow():
         return (
             logs,
             "<h2>❌ 系统错误</h2><p>处理过程中出现错误，请查看日志。</p>",
-            None,
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
@@ -201,13 +206,12 @@ def start_workflow():
         return (
             logs,
             mobile_ui,
-            load_pil_image(item.get("image")),
             gr.update(visible=True, value="✅ 确认出售"),
             gr.update(visible=True, value="❌ 拒绝出售"),
             gr.update(visible=False),
         )
 
-    return logs, "<p>等待启动...</p>", None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+    return logs, "<p>等待启动...</p>", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
 
 def approve_sale():
@@ -215,13 +219,13 @@ def approve_sale():
     global current_workflow_state
 
     if not current_workflow_state:
-        return "请先启动工作流", "错误：工作流未启动", None, gr.update(), gr.update(), gr.update()
+        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update()
 
     # Resume workflow with approval
     final_state = resume_workflow(user_approved=True)
 
     if not final_state:
-        return "错误：无法恢复工作流", "错误：状态丢失", None, gr.update(), gr.update(), gr.update()
+        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update()
 
     logs = format_logs(final_state.get("log_messages", []))
 
@@ -252,7 +256,6 @@ def approve_sale():
     return (
         logs,
         success_ui,
-        load_pil_image(item.get("image")),
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
@@ -264,13 +267,13 @@ def reject_sale():
     global current_workflow_state
 
     if not current_workflow_state:
-        return "请先启动工作流", "错误：工作流未启动", None, gr.update(), gr.update(), gr.update()
+        return "请先启动工作流", "错误：工作流未启动", gr.update(), gr.update(), gr.update()
 
     # Resume workflow with rejection
     final_state = resume_workflow(user_approved=False)
 
     if not final_state:
-        return "错误：无法恢复工作流", "错误：状态丢失", None, gr.update(), gr.update(), gr.update()
+        return "错误：无法恢复工作流", "错误：状态丢失", gr.update(), gr.update(), gr.update()
 
     logs = format_logs(final_state.get("log_messages", []))
 
@@ -296,7 +299,6 @@ def reject_sale():
     return (
         logs,
         reject_ui,
-        load_pil_image(item.get("image")),
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
@@ -323,8 +325,7 @@ def reset_demo():
 
     return (
         "点击「启动智能衣橱系统」开始演示...",
-        "<h2>📱 FashionClaw App</h2><p>等待系统检测闲置衣物...</p>",
-        gr.update(value=None),
+        "<p style='padding: 20px; background: #f8f9fa; border-radius: 8px;'>等待系统检测闲置衣物...</p>",
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
@@ -354,12 +355,24 @@ def view_database():
             if b64:
                 img_tag = f"<img src='{b64}' width='60' style='border-radius:8px;'>"
 
+            # Handle both old format (last_worn_days_ago) and new format (purchase_date)
+            days_ago = "N/A"
+            if "last_worn_days_ago" in item:
+                days_ago = f"{item['last_worn_days_ago']} 天"
+            elif "purchase_date" in item and item["purchase_date"]:
+                try:
+                    from datetime import datetime
+                    purchase_date = datetime.strptime(item["purchase_date"][:10], "%Y-%m-%d")
+                    days_ago = f"{(datetime.now() - purchase_date).days} 天"
+                except:
+                    days_ago = item["purchase_date"]
+
             rows.append(
                 f"<tr><td>{item['item_id']}</td><td>{img_tag}</td>"
                 f"<td>{status_emoji} {item['name']}</td>"
-                f"<td>{item['last_worn_days_ago']} 天</td>"
-                f"<td>{item['status']}</td>"
-                f"<td>¥{item['original_price']}</td></tr>"
+                f"<td>{days_ago}</td>"
+                f"<td>{item.get('status', 'unknown')}</td>"
+                f"<td>¥{item.get('original_price', 'N/A')}</td></tr>"
             )
 
         table = "<table border='1' cellpadding='6' style='border-collapse:collapse;width:100%;'>"
@@ -426,7 +439,7 @@ def list_extracted_clothes():
         files = os.listdir(EXTRACTED_DIR)
         if not files:
             return "暂无提取的衣物"
-        
+
         result = "### 📂 已提取的衣物\n\n"
         for f in sorted(files):
             if f.endswith('.png') or f.endswith('.jpg'):
@@ -437,6 +450,196 @@ def list_extracted_clothes():
         return f"读取失败: {str(e)}"
 
 
+# ========== Upload and Detect Flow Functions ==========
+
+# Global state for upload flow
+upload_workflow_state = None
+last_extracted_items = []
+
+
+def upload_and_detect(image, item_name_prefix):
+    """
+    Handle image upload, segmentation, database registration, and stagnancy detection.
+    """
+    global upload_workflow_state, last_extracted_items
+    last_extracted_items = []
+
+    try:
+        if image is None:
+            return None, None, "请先上传图片", "", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+
+        # Save uploaded image temporarily
+        temp_path = "./temp_upload.jpg"
+        image.save(temp_path)
+
+        # Extract upper and lower body
+        upper_images = gsam_client.extract_upper_body(temp_path, white_background=True)
+        lower_images = gsam_client.extract_lower_body(temp_path, white_background=True)
+
+        # Process extracted items
+        results_info = []
+        upper_output = None
+        lower_output = None
+
+        # Save and register upper body items
+        for i, img in enumerate(upper_images):
+            path = os.path.join(EXTRACTED_DIR, f"upper_{i}_{generate_timestamp()}.png")
+            img.save(path)
+            upper_output = img
+
+            # Register to database
+            name = f"{item_name_prefix}_上衣_{i+1}" if item_name_prefix else f"提取的上衣_{i+1}"
+            item = add_item(
+                name=name,
+                clothing_type="upper",
+                image_path=path,
+                extracted_from="temp_upload.jpg"
+            )
+            last_extracted_items.append(item)
+            results_info.append(f"👕 {name} (ID: {item['item_id']}, 价格: ¥{item['original_price']}, 购买日期: {item['purchase_date']})")
+
+        # Save and register lower body items
+        for i, img in enumerate(lower_images):
+            path = os.path.join(EXTRACTED_DIR, f"lower_{i}_{generate_timestamp()}.png")
+            img.save(path)
+            lower_output = img
+
+            name = f"{item_name_prefix}_下装_{i+1}" if item_name_prefix else f"提取的下装_{i+1}"
+            item = add_item(
+                name=name,
+                clothing_type="lower",
+                image_path=path,
+                extracted_from="temp_upload.jpg"
+            )
+            last_extracted_items.append(item)
+            results_info.append(f"👖 {name} (ID: {item['item_id']}, 价格: ¥{item['original_price']}, 购买日期: {item['purchase_date']})")
+
+        # Check stagnancy for each item
+        stagnant_items = [item for item in last_extracted_items if is_stagnant(item)]
+
+        if stagnant_items:
+            # Use the first stagnant item for the workflow
+            target_item = stagnant_items[0]
+            upload_workflow_state = run_upload_workflow_until_user_input(target_item)
+
+            info_text = f"✅ 提取并注册完成！\n\n"
+            info_text += "已注册物品:\n" + "\n".join(results_info) + "\n\n"
+
+            if upload_workflow_state.get("status") == "awaiting_user_decision":
+                info_text += f"⚠️ 物品「{target_item['name']}」已闲置超过365天！"
+
+                # Build the mobile UI for sell prompt
+                decision = upload_workflow_state.get("agent_decision", "")
+                mobile_html = f"""
+                <div style="padding: 20px; background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%); border-radius: 12px; border: 2px solid #ffc107; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <h3 style="color: #856404; margin-top: 0; font-size: 18px; font-weight: bold;">⚠️ 闲置衣物检测</h3>
+                    <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #856404;">物品:</strong> {target_item['name']}</p>
+                    <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #856404;">购买日期:</strong> {target_item['purchase_date']}</p>
+                    <p style="color: #d32f2f; font-size: 14px; font-weight: bold; line-height: 1.6;"><strong style="color: #856404;">闲置状态:</strong> 超过365天未使用</p>
+                    <hr style="margin: 16px 0; border: none; border-top: 2px solid #ffc107;">
+                    <div style="color: #333; font-size: 14px; line-height: 1.8; background: rgba(255,255,255,0.5); padding: 12px; border-radius: 8px;">{decision.replace(chr(10), '<br>')}</div>
+                </div>
+                """
+
+                return (
+                    upper_output,
+                    lower_output,
+                    info_text,
+                    mobile_html,
+                    gr.update(visible=True),   # approve button
+                    gr.update(visible=True),   # reject button
+                    gr.update(visible=False)   # restart button
+                )
+            else:
+                info_text += "✅ 所有物品状态正常，无需出售。"
+                return (
+                    upper_output,
+                    lower_output,
+                    info_text,
+                    "<p>暂无闲置物品需要处理</p>",
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=True)
+                )
+        else:
+            info_text = f"✅ 提取并注册完成！\n\n"
+            info_text += "已注册物品:\n" + "\n".join(results_info) + "\n\n"
+            info_text += "✅ 所有物品状态正常，无需出售。"
+
+            return (
+                upper_output,
+                lower_output,
+                info_text,
+                "<p>暂无闲置物品需要处理</p>",
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=True)
+            )
+
+    except Exception as e:
+        return None, None, f"❌ 错误: {str(e)}", "", gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+
+
+def approve_upload_sale():
+    """Handle user approving sale from upload flow."""
+    global upload_workflow_state
+
+    if not upload_workflow_state:
+        return "错误: 工作流未启动", gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+
+    # Resume workflow with approval
+    final_state = resume_workflow(user_approved=True)
+
+    if not final_state:
+        return "错误: 无法完成交易", gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+
+    tracking = final_state.get("tracking_info", {})
+    item = final_state.get("current_item", {})
+
+    success_html = f"""
+    <div style="padding: 20px; background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); border-radius: 12px; border: 2px solid #28a745; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h3 style="color: #155724; margin-top: 0; font-size: 18px; font-weight: bold;">✅ 交易成功!</h3>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;">您的衣物「<strong>{item.get('name', 'N/A')}</strong>」已成功售出!</p>
+        <hr style="margin: 16px 0; border: none; border-top: 2px solid #28a745;">
+        <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #155724;">成交价:</strong> ¥{final_state.get('buyer_offer', {}).get('offer_price', 'N/A')}</p>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #155724;">物流公司:</strong> {tracking.get('carrier', 'N/A')}</p>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #155724;">运单号:</strong> <span style="font-family: monospace; background: rgba(255,255,255,0.5); padding: 2px 6px; border-radius: 4px;">{tracking.get('tracking_number', 'N/A')}</span></p>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #155724;">预计送达:</strong> {tracking.get('estimated_delivery', 'N/A')}</p>
+    </div>
+    """
+
+    return success_html, gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+
+
+def reject_upload_sale():
+    """Handle user rejecting sale from upload flow."""
+    global upload_workflow_state
+
+    if not upload_workflow_state:
+        return "已取消出售", gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+
+    # Resume workflow with rejection
+    final_state = resume_workflow(user_approved=False)
+
+    item = upload_workflow_state.get("current_item", {})
+
+    reject_html = f"""
+    <div style="padding: 20px; background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%); border-radius: 12px; border: 2px solid #dc3545; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h3 style="color: #721c24; margin-top: 0; font-size: 18px; font-weight: bold;">❌ 已拒绝出售</h3>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;">您已选择保留「<strong>{item.get('name', 'N/A')}</strong>」。</p>
+        <p style="color: #555; font-size: 14px; line-height: 1.6;">该物品将继续保留在您的衣橱中。</p>
+    </div>
+    """
+
+    return reject_html, gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+
+
+def generate_timestamp():
+    """Generate timestamp string for unique filenames."""
+    from datetime import datetime
+    return datetime.now().strftime("%m%d_%H%M%S")
+
+
 # ========== Gradio UI ==========
 
 with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) as demo:
@@ -444,124 +647,118 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
     # 🧥 FashionClaw 智能衣橱系统
     ## AI 驱动的多代理衣橱管理平台
     """)
-    
-    # Tab 1: Clothing Segmentation
-    with gr.Tab("👕 衣物分割"):
+
+    # Tab 1: Upload and Detect (New Flow)
+    with gr.Tab("📤 上传&检测"):
         gr.Markdown("""
-        ### 上传照片，自动提取上衣和下装
-        使用 SAM (Segment Anything Model) 智能分割衣物
+        ### 上传照片 → 自动分割 → 检测闲置 → 提示出售
+        上传您的穿搭照片，系统自动提取衣物并检测是否需要出售
         """)
-        
+
         with gr.Row():
+            # Left Column: Upload and Results
             with gr.Column(scale=1):
-                # Upload section
-                image_input = gr.Image(
+                gr.Markdown("### 📤 上传与提取")
+
+                upload_image = gr.Image(
                     type="pil",
-                    label="上传衣物照片",
+                    label="上传您的穿搭照片",
                     sources=["upload"]
-
-    with gr.Row():
-        # Left Column: Agent Backend Dashboard
-        with gr.Column(scale=1):
-            gr.Markdown("### 🤖 代理后端监控面板")
-
-            log_output = gr.Textbox(
-                label="系统日志",
-                value="点击「启动智能衣橱系统」开始演示...",
-                lines=20,
-                max_lines=30,
-                autoscroll=True,
-                interactive=False,
-            )
-
-            with gr.Row():
-                start_btn = gr.Button("🚀 启动智能衣橱系统", variant="primary", size="lg")
-                reset_btn = gr.Button("🔄 重置演示", size="lg")
-
-            gr.Markdown("---")
-            gr.Markdown("### 🗄️ 当前数据库状态")
-            db_view = gr.HTML("<p>点击「刷新数据库」查看...</p>")
-            refresh_db_btn = gr.Button("🔄 刷新数据库")
-
-        # Right Column: Mobile App Mockup
-        with gr.Column(scale=1):
-            gr.Markdown("### 📱 移动端 App 界面")
-
-            mobile_ui = gr.HTML(
-                "<h2>📱 FashionClaw App</h2><p>等待系统检测闲置衣物...</p>"
-            )
-
-            item_image = gr.Image(
-                label="衣物图片",
-                visible=True,
-                height=260,
-                show_label=False,
-                container=False,
-                interactive=False,
-                value=None,
-            )
-
-            with gr.Row():
-                approve_btn = gr.Button(
-                    "✅ 确认出售",
-                    variant="primary",
-                    size="lg",
-                    visible=False,
                 )
-                extract_btn = gr.Button("🔍 开始分割", variant="primary", size="lg")
-                
-                # Info output
-                extract_info = gr.Textbox(
-                    label="处理结果",
-                    value="等待上传图片...",
-                    lines=4,
+
+                item_name_prefix = gr.Textbox(
+                    label="衣物名称前缀（可选）",
+                    placeholder="例如：我的",
+                    value=""
+                )
+
+                upload_detect_btn = gr.Button("🚀 上传并检测", variant="primary", size="lg")
+
+                gr.Markdown("---")
+                gr.Markdown("### 📊 处理结果")
+
+                upload_info = gr.Textbox(
+                    label="注册信息",
+                    value="等待上传...",
+                    lines=6,
                     interactive=False
                 )
-                
-                # Extracted files list
-                extracted_list = gr.Markdown("暂无提取的衣物")
-                refresh_extracted_btn = gr.Button("🔄 刷新列表")
-                
-            with gr.Column(scale=2):
-                # Results display
+
                 with gr.Row():
-                    upper_output = gr.Image(
-                        type="pil",
-                        label="👕 提取的上衣",
-                        interactive=False
-                    )
-                    lower_output = gr.Image(
-                        type="pil",
-                        label="👖 提取的下装",
-                        interactive=False
-                    )
-                
-                # Saved paths
-                saved_paths = gr.Textbox(
-                    label="已保存的文件路径",
-                    value="",
-                    lines=3,
-                    interactive=False
+                    with gr.Column():
+                        upper_result = gr.Image(
+                            type="pil",
+                            label="👕 提取的上衣",
+                            interactive=False
+                        )
+                    with gr.Column():
+                        lower_result = gr.Image(
+                            type="pil",
+                            label="👖 提取的下装",
+                            interactive=False
+                        )
+
+            # Right Column: Prompt and Action
+            with gr.Column(scale=1):
+                gr.Markdown("### 📱 闲置检测提示")
+
+                upload_mobile_ui = gr.HTML(
+                    "<p style='padding: 20px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 12px; border: 2px solid #2196f3; color: #1565c0; font-size: 16px; font-weight: 500; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>"
+                    "📤 上传图片后将在此处显示闲置检测结果..."
+                    "</p>"
                 )
-        
-        # Event handlers for segmentation tab
-        extract_btn.click(
-            fn=extract_and_segment_clothing,
-            inputs=[image_input],
-            outputs=[upper_output, lower_output, extract_info, saved_paths]
+
+                with gr.Row():
+                    upload_approve_btn = gr.Button(
+                        "✅ 确认出售",
+                        variant="primary",
+                        size="lg",
+                        visible=False,
+                    )
+                    upload_reject_btn = gr.Button(
+                        "❌ 拒绝出售",
+                        variant="secondary",
+                        size="lg",
+                        visible=False,
+                    )
+
+                upload_restart_btn = gr.Button(
+                    "🔄 重新开始",
+                    size="lg",
+                    visible=True,
+                )
+
+        # Event handlers for upload tab
+        upload_detect_btn.click(
+            fn=upload_and_detect,
+            inputs=[upload_image, item_name_prefix],
+            outputs=[upper_result, lower_result, upload_info, upload_mobile_ui,
+                     upload_approve_btn, upload_reject_btn, upload_restart_btn]
         )
-        
-        refresh_extracted_btn.click(
-            fn=list_extracted_clothes,
-            outputs=[extracted_list]
+
+        upload_approve_btn.click(
+            fn=approve_upload_sale,
+            outputs=[upload_mobile_ui, upload_approve_btn, upload_reject_btn, upload_restart_btn]
         )
-    
+
+        upload_reject_btn.click(
+            fn=reject_upload_sale,
+            outputs=[upload_mobile_ui, upload_approve_btn, upload_reject_btn, upload_restart_btn]
+        )
+
+        upload_restart_btn.click(
+            fn=lambda: ("等待上传...",
+                       "<p style='padding: 20px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 12px; border: 2px solid #2196f3; color: #1565c0; font-size: 16px; font-weight: 500; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>📤 上传图片后将在此处显示闲置检测结果...</p>",
+                       gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)),
+            outputs=[upload_info, upload_mobile_ui, upload_approve_btn, upload_reject_btn, upload_restart_btn]
+        )
+
     # Tab 2: Original Workflow
     with gr.Tab("🤖 智能衣橱工作流"):
         gr.Markdown("""
         ### 本系统演示：自动检测闲置衣物 → 评估市场价值 → 匹配买家 → 用户确认 → 执行交易
         """)
-        
+
         with gr.Row():
             # Left Column: Agent Backend Dashboard
             with gr.Column(scale=1):
@@ -582,15 +779,15 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
 
                 gr.Markdown("---")
                 gr.Markdown("### 🗄️ 当前数据库状态")
-                db_view = gr.Markdown("点击「刷新数据库」查看...")
+                db_view = gr.HTML("<p>点击「刷新数据库」查看...</p>")
                 refresh_db_btn = gr.Button("🔄 刷新数据库")
 
             # Right Column: Mobile App Mockup
             with gr.Column(scale=1):
                 gr.Markdown("### 📱 移动端 App 界面")
 
-                mobile_ui = gr.Markdown(
-                    "## 📱 FashionClaw App\n\n等待系统检测闲置衣物..."
+                mobile_ui = gr.HTML(
+                    "<p style='padding: 20px; background: #f8f9fa; border-radius: 8px;'>等待系统检测闲置衣物...</p>"
                 )
 
                 with gr.Row():
@@ -643,7 +840,7 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
                          └─────────────┘
             ```
             """)
-        
+
         # Event handlers for workflow tab
         start_btn.click(
             fn=start_workflow,
@@ -674,36 +871,6 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
             fn=view_database,
             outputs=db_view,
         )
-    # Event handlers
-    start_btn.click(
-        fn=start_workflow,
-        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
-    )
-
-    approve_btn.click(
-        fn=approve_sale,
-        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
-    )
-
-    reject_btn.click(
-        fn=reject_sale,
-        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
-    )
-
-    restart_btn.click(
-        fn=reset_demo,
-        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
-    )
-
-    reset_btn.click(
-        fn=reset_demo,
-        outputs=[log_output, mobile_ui, item_image, approve_btn, reject_btn, restart_btn],
-    )
-
-    refresh_db_btn.click(
-        fn=view_database,
-        outputs=db_view,
-    )
 
 # Always start with a fresh database on module load so previous demo runs don't pollute state
 try:

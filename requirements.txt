@@ -1,0 +1,15 @@
+# Core dependencies
+gradio>=4.0.0
+langgraph>=0.0.50
+langchain-core>=0.1.0
+Pillow>=10.0.0
+requests>=2.31.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+# For segment_service.py (local SAM service)
+# Note: These are only needed if running the local SAM service
+# segment-anything @ git+https://github.com/facebookresearch/segment-anything.git
+# opencv-python>=4.8.0
+# torch>=2.0.0
+# torchvision>=0.15.0
