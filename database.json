@@ -5,52 +5,56 @@
       "name": "Blue Denim Jacket",
       "last_worn_days_ago": 45,
       "status": "in_closet",
-      "original_price": 299
+      "original_price": 299,
+      "image": "images/denim_jacket.jpg"
     },
     {
       "item_id": "002",
-      "name": "Black Leather Boots",
-      "last_worn_days_ago": 120,
+      "name": "Red Summer Dress",
+      "last_worn_days_ago": 420,
       "status": "in_closet",
-      "original_price": 599
+      "original_price": 189,
+      "image": "images/red_dress.jpg"
     },
     {
       "item_id": "003",
-      "name": "Red Summer Dress",
-      "last_worn_days_ago": 420,
-      "status": "sold",
-      "original_price": 189,
-      "sold_at": "2026-04-02 11:19:28"
+      "name": "Vintage Wool Sweater",
+      "last_worn_days_ago": 500,
+      "status": "in_closet",
+      "original_price": 350,
+      "image": "images/wool_sweater.jpg"
     },
     {
       "item_id": "004",
-      "name": "White Sneakers",
-      "last_worn_days_ago": 15,
+      "name": "Brown Leather Belt",
+      "last_worn_days_ago": 380,
       "status": "in_closet",
-      "original_price": 459
+      "original_price": 89,
+      "image": "images/leather_belt.jpg"
     },
     {
       "item_id": "005",
-      "name": "Vintage Wool Sweater",
-      "last_worn_days_ago": 500,
-      "status": "sold",
-      "original_price": 350,
-      "sold_at": "2026-04-02 11:19:59"
+      "name": "Black Slim Trousers",
+      "last_worn_days_ago": 120,
+      "status": "in_closet",
+      "original_price": 259,
+      "image": "images/black_trousers.jpg"
     },
     {
       "item_id": "006",
-      "name": "Gray Hoodie",
-      "last_worn_days_ago": 7,
+      "name": "White Linen Shirt",
+      "last_worn_days_ago": 15,
       "status": "in_closet",
-      "original_price": 199
+      "original_price": 179,
+      "image": "images/white_shirt.jpg"
     },
     {
       "item_id": "007",
-      "name": "Brown Leather Belt",
-      "last_worn_days_ago": 380,
-      "status": "sold",
-      "original_price": 89,
-      "sold_at": "2026-04-02 11:21:30"
+      "name": "Green Bomber Jacket",
+      "last_worn_days_ago": 200,
+      "status": "in_closet",
+      "original_price": 499,
+      "image": "images/green_bomber.jpg"
     }
   ]
 }

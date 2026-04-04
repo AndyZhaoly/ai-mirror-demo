@@ -300,6 +300,17 @@ def build_workflow():
 workflow_app = build_workflow()
 
 
+def reset_workflow():
+    """Reset the in-memory LangGraph checkpoint for the demo thread."""
+    try:
+        workflow_app.update_state(
+            {"configurable": {"thread_id": "fashionclaw_demo"}},
+            create_initial_state(),
+        )
+    except Exception as e:
+        print(f"Warning: failed to reset workflow checkpoint: {e}")
+
+
 def run_workflow_until_user_input():
     """
     Run the workflow until it needs user input.
