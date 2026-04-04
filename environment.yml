@@ -9,3 +9,5 @@ dependencies:
     - gradio>=4.0.0
     - langgraph>=0.0.50
     - langchain-core>=0.1.0
+    - Pillow>=10.0.0
+    - requests>=2.31.0
