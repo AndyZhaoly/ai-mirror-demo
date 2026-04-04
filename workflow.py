@@ -17,6 +17,7 @@ from mock_apis import (
     execute_logistics,
     update_item_status,
 )
+from database_manager import is_stagnant
 
 
 class WorkflowState(TypedDict):
@@ -189,6 +190,31 @@ def wait_for_user_node(state: WorkflowState) -> WorkflowState:
     return state
 
 
+def stagnancy_check_node(state: WorkflowState) -> WorkflowState:
+    """
+    Stagnancy Check Node: Checks if the current item is stagnant (>365 days).
+    Called immediately after adding a new item from upload.
+    """
+    item = state.get("current_item")
+    if not item:
+        add_log(state, "❌ 错误: 没有物品可检查")
+        state["status"] = "error"
+        return state
+
+    add_log(state, f"🔍 检查物品闲置状态: {item['name']}")
+
+    if is_stagnant(item, threshold_days=365):
+        days_since = (datetime.now() - datetime.strptime(item['purchase_date'][:10], "%Y-%m-%d")).days
+        add_log(state, f"⚠️ 发现闲置物品！已购买 {days_since} 天")
+        add_log(state, f"💡 触发出售建议...")
+        state["status"] = "item_stagnant"
+    else:
+        add_log(state, f"✅ 物品状态正常，无需处理")
+        state["status"] = "item_fresh"
+
+    return state
+
+
 def execute_node(state: WorkflowState) -> WorkflowState:
     """
     Execute Node: Completes the sale and arranges logistics.
@@ -350,3 +376,40 @@ def resume_workflow(user_approved: bool):
             final_state = value
 
     return final_state
+
+
+# ========== Upload Flow Functions ==========
+
+def create_state_for_item(item: dict) -> WorkflowState:
+    """Create workflow state for a specific item (used in upload flow)."""
+    state = create_initial_state()
+    state["current_item"] = item
+    return state
+
+
+def run_upload_workflow(item: dict) -> WorkflowState:
+    """
+    Run workflow for a newly uploaded item:
+    stagnancy check -> if stagnant -> evaluate -> wait for user -> execute
+    """
+    state = create_state_for_item(item)
+
+    # Step 1: Check stagnancy
+    state = stagnancy_check_node(state)
+
+    if state["status"] == "item_stagnant":
+        # Step 2: Evaluate (market price, buyer, etc.)
+        state = evaluate_node(state)
+        return state
+    else:
+        # Item is fresh, no need to sell
+        return state
+
+
+def run_upload_workflow_until_user_input(item: dict) -> WorkflowState:
+    """
+    Run upload workflow until it needs user input.
+    Returns state at the user decision point.
+    """
+    state = run_upload_workflow(item)
+    return state
