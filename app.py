@@ -355,12 +355,24 @@ def view_database():
             if b64:
                 img_tag = f"<img src='{b64}' width='60' style='border-radius:8px;'>"
 
+            # Handle both old format (last_worn_days_ago) and new format (purchase_date)
+            days_ago = "N/A"
+            if "last_worn_days_ago" in item:
+                days_ago = f"{item['last_worn_days_ago']} 天"
+            elif "purchase_date" in item and item["purchase_date"]:
+                try:
+                    from datetime import datetime
+                    purchase_date = datetime.strptime(item["purchase_date"][:10], "%Y-%m-%d")
+                    days_ago = f"{(datetime.now() - purchase_date).days} 天"
+                except:
+                    days_ago = item["purchase_date"]
+
             rows.append(
                 f"<tr><td>{item['item_id']}</td><td>{img_tag}</td>"
                 f"<td>{status_emoji} {item['name']}</td>"
-                f"<td>{item['last_worn_days_ago']} 天</td>"
-                f"<td>{item['status']}</td>"
-                f"<td>¥{item['original_price']}</td></tr>"
+                f"<td>{days_ago}</td>"
+                f"<td>{item.get('status', 'unknown')}</td>"
+                f"<td>¥{item.get('original_price', 'N/A')}</td></tr>"
             )
 
         table = "<table border='1' cellpadding='6' style='border-collapse:collapse;width:100%;'>"
@@ -519,13 +531,13 @@ def upload_and_detect(image, item_name_prefix):
                 # Build the mobile UI for sell prompt
                 decision = upload_workflow_state.get("agent_decision", "")
                 mobile_html = f"""
-                <div style="padding: 16px; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
-                    <h3>⚠️ 闲置衣物检测</h3>
-                    <p><strong>物品:</strong> {target_item['name']}</p>
-                    <p><strong>购买日期:</strong> {target_item['purchase_date']}</p>
-                    <p><strong>闲置状态:</strong> 超过365天未使用</p>
-                    <hr style="margin: 12px 0;">
-                    {decision.replace(chr(10), '<br>')}
+                <div style="padding: 20px; background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%); border-radius: 12px; border: 2px solid #ffc107; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <h3 style="color: #856404; margin-top: 0; font-size: 18px; font-weight: bold;">⚠️ 闲置衣物检测</h3>
+                    <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #856404;">物品:</strong> {target_item['name']}</p>
+                    <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #856404;">购买日期:</strong> {target_item['purchase_date']}</p>
+                    <p style="color: #d32f2f; font-size: 14px; font-weight: bold; line-height: 1.6;"><strong style="color: #856404;">闲置状态:</strong> 超过365天未使用</p>
+                    <hr style="margin: 16px 0; border: none; border-top: 2px solid #ffc107;">
+                    <div style="color: #333; font-size: 14px; line-height: 1.8; background: rgba(255,255,255,0.5); padding: 12px; border-radius: 8px;">{decision.replace(chr(10), '<br>')}</div>
                 </div>
                 """
 
@@ -585,14 +597,14 @@ def approve_upload_sale():
     item = final_state.get("current_item", {})
 
     success_html = f"""
-    <div style="padding: 16px; background: #d4edda; border-radius: 8px; border-left: 4px solid #28a745;">
-        <h3>✅ 交易成功!</h3>
-        <p>您的衣物「{item.get('name', 'N/A')}」已成功售出!</p>
-        <hr>
-        <p><strong>成交价:</strong> ¥{final_state.get('buyer_offer', {}).get('offer_price', 'N/A')}</p>
-        <p><strong>物流公司:</strong> {tracking.get('carrier', 'N/A')}</p>
-        <p><strong>运单号:</strong> {tracking.get('tracking_number', 'N/A')}</p>
-        <p><strong>预计送达:</strong> {tracking.get('estimated_delivery', 'N/A')}</p>
+    <div style="padding: 20px; background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); border-radius: 12px; border: 2px solid #28a745; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h3 style="color: #155724; margin-top: 0; font-size: 18px; font-weight: bold;">✅ 交易成功!</h3>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;">您的衣物「<strong>{item.get('name', 'N/A')}</strong>」已成功售出!</p>
+        <hr style="margin: 16px 0; border: none; border-top: 2px solid #28a745;">
+        <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #155724;">成交价:</strong> ¥{final_state.get('buyer_offer', {}).get('offer_price', 'N/A')}</p>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #155724;">物流公司:</strong> {tracking.get('carrier', 'N/A')}</p>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #155724;">运单号:</strong> <span style="font-family: monospace; background: rgba(255,255,255,0.5); padding: 2px 6px; border-radius: 4px;">{tracking.get('tracking_number', 'N/A')}</span></p>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;"><strong style="color: #155724;">预计送达:</strong> {tracking.get('estimated_delivery', 'N/A')}</p>
     </div>
     """
 
@@ -612,10 +624,10 @@ def reject_upload_sale():
     item = upload_workflow_state.get("current_item", {})
 
     reject_html = f"""
-    <div style="padding: 16px; background: #f8d7da; border-radius: 8px; border-left: 4px solid #dc3545;">
-        <h3>❌ 已拒绝出售</h3>
-        <p>您已选择保留「{item.get('name', 'N/A')}」。</p>
-        <p>该物品将继续保留在您的衣橱中。</p>
+    <div style="padding: 20px; background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%); border-radius: 12px; border: 2px solid #dc3545; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h3 style="color: #721c24; margin-top: 0; font-size: 18px; font-weight: bold;">❌ 已拒绝出售</h3>
+        <p style="color: #333; font-size: 14px; line-height: 1.6;">您已选择保留「<strong>{item.get('name', 'N/A')}</strong>」。</p>
+        <p style="color: #555; font-size: 14px; line-height: 1.6;">该物品将继续保留在您的衣橱中。</p>
     </div>
     """
 
@@ -691,8 +703,8 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
                 gr.Markdown("### 📱 闲置检测提示")
 
                 upload_mobile_ui = gr.HTML(
-                    "<p style='padding: 20px; background: #f8f9fa; border-radius: 8px;'>"
-                    "上传图片后将在此处显示闲置检测结果..."
+                    "<p style='padding: 20px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 12px; border: 2px solid #2196f3; color: #1565c0; font-size: 16px; font-weight: 500; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>"
+                    "📤 上传图片后将在此处显示闲置检测结果..."
                     "</p>"
                 )
 
@@ -736,7 +748,7 @@ with gr.Blocks(title="FashionClaw 智能衣橱系统", theme=gr.themes.Soft()) a
 
         upload_restart_btn.click(
             fn=lambda: ("等待上传...",
-                       "<p style='padding: 20px; background: #f8f9fa; border-radius: 8px;'>上传图片后将在此处显示闲置检测结果...</p>",
+                       "<p style='padding: 20px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 12px; border: 2px solid #2196f3; color: #1565c0; font-size: 16px; font-weight: 500; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>📤 上传图片后将在此处显示闲置检测结果...</p>",
                        gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)),
             outputs=[upload_info, upload_mobile_ui, upload_approve_btn, upload_reject_btn, upload_restart_btn]
         )

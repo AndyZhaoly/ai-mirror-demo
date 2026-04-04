@@ -203,9 +203,25 @@ def stagnancy_check_node(state: WorkflowState) -> WorkflowState:
 
     add_log(state, f"🔍 检查物品闲置状态: {item['name']}")
 
-    if is_stagnant(item, threshold_days=365):
-        days_since = (datetime.now() - datetime.strptime(item['purchase_date'][:10], "%Y-%m-%d")).days
-        add_log(state, f"⚠️ 发现闲置物品！已购买 {days_since} 天")
+    # Check for both old format (last_worn_days_ago) and new format (purchase_date)
+    is_item_stagnant = False
+    days_since = 0
+    
+    if "purchase_date" in item and item["purchase_date"]:
+        # New format - use is_stagnant function
+        is_item_stagnant = is_stagnant(item, threshold_days=365)
+        if is_item_stagnant:
+            try:
+                days_since = (datetime.now() - datetime.strptime(item['purchase_date'][:10], "%Y-%m-%d")).days
+            except:
+                days_since = 400  # Fallback
+    elif "last_worn_days_ago" in item:
+        # Old format - directly check days
+        days_since = item["last_worn_days_ago"]
+        is_item_stagnant = days_since > 365
+
+    if is_item_stagnant:
+        add_log(state, f"⚠️ 发现闲置物品！已 {days_since} 天未穿着")
         add_log(state, f"💡 触发出售建议...")
         state["status"] = "item_stagnant"
     else:
@@ -412,4 +428,15 @@ def run_upload_workflow_until_user_input(item: dict) -> WorkflowState:
     Returns state at the user decision point.
     """
     state = run_upload_workflow(item)
+    
+    # Save state to workflow_app for resume_workflow to work
+    # Update the state in the checkpoint
+    try:
+        workflow_app.update_state(
+            {"configurable": {"thread_id": "fashionclaw_demo"}},
+            state,
+        )
+    except Exception as e:
+        print(f"Warning: failed to save workflow state: {e}")
+    
     return state
