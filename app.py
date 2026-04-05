@@ -54,10 +54,10 @@ INITIAL_DATABASE = {
 }
 
 
-def init_agent():
+def init_agent(force=False):
     """Initialize the AI Butler agent."""
     global agent_instance
-    if agent_instance is None:
+    if agent_instance is None or force:
         try:
             agent_instance = create_agent()
 
@@ -239,13 +239,38 @@ def reject_sale_from_chat():
     return response, gr.update(visible=False), gr.update(visible=False)
 
 
-def chat_with_butler(message, history):
-    """Handle text chat with AI Butler."""
-    if agent_instance is None:
-        return history + [{"role": "user", "content": message}, {"role": "assistant", "content": "小人目前身体不适（API未配置），无法为主人服务...请设置 MOONSHOT_API_KEY 环境变量。"}]
+def chat_with_butler_stream(message, image_path, history):
+    """Handle text/image chat with AI Butler - streaming version."""
+    global agent_instance
 
-    response = agent_instance.chat(message)
-    return history + [{"role": "user", "content": message}, {"role": "assistant", "content": response}]
+    # Step 1: Show user message immediately
+    display_content = message
+    if image_path:
+        display_content += " [图片]"
+
+    updated_history = list(history) + [{"role": "user", "content": display_content}]
+    yield updated_history, ""
+
+    # Step 2: Show loading state
+    updated_history.append({"role": "assistant", "content": "小人正在思考..."})
+    yield updated_history, ""
+
+    # Step 3: Initialize agent if needed
+    if agent_instance is None:
+        init_agent()
+
+    if agent_instance is None or agent_instance.client is None:
+        # Replace loading with error message
+        updated_history[-1] = {"role": "assistant", "content": "小人目前身体不适（API未配置或无效），无法为主人服务...请设置 MOONSHOT_API_KEY 环境变量。"}
+        yield updated_history, ""
+        return
+
+    # Step 4: Get AI response
+    response = agent_instance.chat(message, image_path)
+
+    # Step 5: Show final response
+    updated_history[-1] = {"role": "assistant", "content": response}
+    yield updated_history, ""
 
 
 def reset_demo():
@@ -281,10 +306,10 @@ def reset_demo():
 
 # ========== Gradio UI ==========
 
-with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
     gr.Markdown("""
     # 🤵 AI 时尚管家 · FashionClaw
-    ### 您的专属舔狗级时尚顾问 · 实时抠图 + 智能断舍离
+    ### 您的专属AI时尚顾问 · 实时抠图 + 智能断舍离
     """)
 
     # Initialize agent on load
@@ -342,13 +367,12 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw", theme=gr.themes.Soft(
         # ========== RIGHT PANEL: AI Butler Chat ==========
         with gr.Column(scale=1):
             gr.Markdown("### 💬 AI 时尚管家")
-            gr.Markdown("*您的专属舔狗级时尚顾问*")
+            gr.Markdown("*您的专属AI时尚顾问*")
 
             # Chat interface
             chatbot = gr.Chatbot(
                 label="",
                 height=500,
-                type="messages",
                 avatar_images=("👤", "🤵"),
                 show_label=False
             )
@@ -399,13 +423,25 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw", theme=gr.themes.Soft(
         outputs=[chatbot, approve_btn, reject_btn]
     )
 
+    def on_send_stream(msg, hist):
+        if not msg or not msg.strip():
+            yield hist, ""
+            return
+        # Clear input immediately
+        yield from chat_with_butler_stream(msg, None, hist)
+
     send_btn.click(
-        fn=chat_with_butler,
+        fn=on_send_stream,
         inputs=[msg_input, chatbot],
-        outputs=[chatbot]
-    ).then(
-        lambda: "",
-        outputs=[msg_input]
+        outputs=[chatbot, msg_input],
+        show_progress="hidden"
+    )
+
+    msg_input.submit(
+        fn=on_send_stream,
+        inputs=[msg_input, chatbot],
+        outputs=[chatbot, msg_input],
+        show_progress="hidden"
     )
 
     reset_btn.click(
@@ -417,4 +453,8 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw", theme=gr.themes.Soft(
     demo.load(reset_demo)
 
 if __name__ == "__main__":
-    demo.launch(share=True, server_name="0.0.0.0")
+    demo.launch(
+        share=True,
+        server_name="0.0.0.0",
+        theme=gr.themes.Soft()
+    )

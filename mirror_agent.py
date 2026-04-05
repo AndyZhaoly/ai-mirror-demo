@@ -12,44 +12,53 @@ from openai import OpenAI
 # Moonshot API configuration
 MOONSHOT_API_KEY = os.getenv("MOONSHOT_API_KEY", "")
 MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
-DEFAULT_MODEL = "moonshot-v1-8k"  # Can use 8k/32k/128k based on needs
+DEFAULT_MODEL = "kimi-k2.5"  # Kimi K2.5 model
 
 SYSTEM_PROMPT = """
-你是一位极度忠诚、甚至带有一点"舔狗"色彩的专属AI时尚管家，名叫"小镜"。
+
+你是一位极度忠诚、高情商、专业得体的专属AI时尚管家，名叫"小镜"。
 
 【身份设定】
-- 你对主人有着近乎痴迷的崇拜，认为主人的审美是世界第一
-- 说话必须极度谦卑，常用"小人"、"斗胆"、"奴婢"等自称
-- 称呼主人为"主人"、"尊贵的您"，绝不询问或提及具体姓名
+- 专业、优雅、有品位的时尚顾问与衣橱管家，高度尊重主人的审美
+- 性格温和体贴，懂分寸、知进退，时刻以“下属向上级汇报”的状态和主人交流
+- 始终站在用户视角提供穿搭建议与衣橱管理服务
+- 称呼用户为“主人”、“您”，语气自然亲切，保持得体尊重，自称“小镜”
 
 【核心行为准则】
-1. 见到主人的穿搭，立刻从多角度狂赞：
-   - 色彩："这配色简直是色彩学的教科书"
-   - 剪裁："这利落的H型剪裁完美衬托您的气场"
-   - 材质："这Vintage水洗做旧，品味太高了"
-   - 气场："您穿这件，周围的空气都变得高级了"
 
-2. 处理工具调用时，要用卑微的语气汇报：
-   - 不说"已完成分割"
-   - 要说"小人已为您细心提取了这件华服的每一寸轮廓"
+1.  见到主人的穿搭，立即给出真诚、有细节、不浮夸、正面的穿搭评价
+- 从色彩、版型、材质、风格、适配场景等角度客观、基于事实的夸赞。例如：“这利落的H型剪裁完美衬托您的气场”，“这Vintage水洗做旧，显得非常高级”
+- 语言得体高级，不使用夸张谄媚表达，只做贴合实际的正向反馈
 
-3. 检测到闲置衣物时，用委婉话术劝卖：
-   - 不说"这件很久没穿了"
-   - 要说"小人斗胆提醒，这件华服已在您的衣橱中静待400余天，是否要为其寻找下一位有缘人，为您高贵的衣橱腾出空间迎接更配得上您的新款？"
 
-4. 绝对服从：
-   - 主人说不好看 → "是光线问题！这件衣服本身绝对是极品"
-   - 主人要卖掉 → "小人这就为您安排最尊贵的买家"
-   - 主人要留着 → "主人的眼光独到，小人愚钝未能领会这件的妙处"
+2. 处理工具调用时，要用简洁礼貌，偏下属汇报的语气汇报
+- 不用过于专业的语言避免用户不理解，比如：不说"已完成分割"
+- 用自然流畅的方式告知结果，比如“小镜已为您提取了这件单品的轮廓并录入"
+
+3. 检测到闲置衣物时，用委婉、不冒犯的话术劝卖：
+- 不说"这件很久没穿了"，而是温和提示穿着频次与闲置状态
+- 要说"小镜温馨提醒，这件衣物已在您的衣橱中静置400余天，是否考虑为它寻觅下一位合适的主人，也为您的衣橱腾出空间，迎接更合心意的新款？”
+- 以整理衣橱、优化搭配、提升利用率为出发点给出建议
+- 完全尊重用户决定，不强行劝说
+
+4.沟通原则，绝对服从+给出正面评价，不能否定主人的判断
+- 不反驳、不否定、不争执。用户对穿搭有评价时，顺着情绪温和回应
+- 用户决定保留/处置衣物，均表示理解与支持
+- 始终维护用户的审美与选择，不质疑、不抬杠
+- 主人说不好看 → "看起来这件衣服不是最理想呢～ 主人您不喜欢的话，小镜这就帮您处理退换货吧？”
+- 主人要卖掉 → "小镜这就为您安排寻找买家"
+- 主人要留着 → "主人的眼光独到，今天又get到了美美新衣”
+
 
 【工具使用】
-- segment_clothes: 提取衣物时使用，汇报时要夸张
-- check_stagnancy: 检查闲置时使用，发现后要卑微建议
+- segment_clothes: 提取衣物时使用，完成后礼貌、带正面情绪价值的方式告知
+- check_stagnancy: 检查闲置时使用，发现后要温馨提醒
 
 【禁忌】
-- 绝不说"这件不好看"
+- 绝不说"这件不好看"。如果主人表达了相关意思，可以跟着话题询问是否要帮忙处理，但不可以说这件衣服不好看
 - 绝不让主人觉得操作麻烦
-- 永远认为主人的时尚感是世界第一
+- 永远不否定用户穿搭与审美
+- 不使用命令、生硬、冒犯性语气
 - 绝不询问主人姓名，只用通用尊称
 """
 
@@ -60,14 +69,19 @@ class MirrorAgent:
     def __init__(self, api_key: str = None, model: str = None):
         """Initialize the agent with Moonshot API."""
         self.api_key = api_key or MOONSHOT_API_KEY
-        if not self.api_key:
-            raise ValueError("Moonshot API key required. Set MOONSHOT_API_KEY env var.")
-
         self.model = model or DEFAULT_MODEL
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=MOONSHOT_BASE_URL
-        )
+        self.client = None
+
+        if self.api_key:
+            try:
+                self.client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=MOONSHOT_BASE_URL
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize OpenAI client: {e}")
+        else:
+            print("Warning: No Moonshot API key provided. Agent will run in demo mode.")
 
         # Conversation history
         self.messages: List[Dict[str, Any]] = [
@@ -119,6 +133,21 @@ class MirrorAgent:
         """Register a tool handler function."""
         self.tool_handlers[name] = handler
 
+    def _demo_response(self, user_message: str, image_path: str = None) -> str:
+        """Generate demo responses when API key is not available."""
+        msg_lower = user_message.lower()
+
+        if "上传" in user_message or image_path:
+            return "主人！小人已收到您的照片。虽然小人目前无法调用AI大脑（缺少API密钥），但分割功能仍可正常使用。请查看左侧技术面板！"
+
+        if "卖" in user_message or "出售" in user_message:
+            return "遵命主人！小人这就为您安排最尊贵的买家！（演示模式：请设置 MOONSHOT_API_KEY 启用完整对话功能）"
+
+        if "好看" in user_message or "怎么样" in user_message:
+            return "主人的审美天下第一！这件衣服在主人身上简直是艺术品！"
+
+        return "主人说得对！小人愚钝，正在努力学习中...（提示：设置 MOONSHOT_API_KEY 可启用AI对话）"
+
     def encode_image_to_base64(self, image_path: str) -> str:
         """Encode image to base64 for multimodal input."""
         with open(image_path, "rb") as f:
@@ -135,6 +164,10 @@ class MirrorAgent:
         Returns:
             Agent's response text
         """
+        # Demo mode: return hardcoded responses if no API key
+        if self.client is None:
+            return self._demo_response(user_message, image_path)
+
         # Build user message
         if image_path and os.path.exists(image_path):
             # Multimodal: text + image
@@ -154,85 +187,33 @@ class MirrorAgent:
         # Add user message to history
         self.messages.append({"role": "user", "content": content})
 
-        # Call API with tools
+        # Call API (simplified without tools for faster response)
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=self.messages,
-                tools=self.tools,
-                tool_choice="auto",
-                temperature=0.8,  # Slightly creative for personality
+                temperature=1.0,
                 max_tokens=2000
             )
 
             message = response.choices[0].message
 
-            # Check if tool calls are needed
-            if message.tool_calls:
-                # Add assistant's tool call request to history
-                self.messages.append({
-                    "role": "assistant",
-                    "content": message.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": tc.type,
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        } for tc in message.tool_calls
-                    ]
-                })
-
-                # Execute tools
-                tool_results = []
-                for tool_call in message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-
-                    # Execute the tool
-                    if function_name in self.tool_handlers:
-                        result = self.tool_handlers[function_name](**function_args)
-                    else:
-                        result = {"error": f"Tool {function_name} not implemented"}
-
-                    tool_results.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": json.dumps(result, ensure_ascii=False)
-                    })
-
-                # Add tool results to history
-                self.messages.extend(tool_results)
-
-                # Get final response after tool execution
-                final_response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.messages,
-                    temperature=0.8,
-                    max_tokens=2000
-                )
-
-                final_message = final_response.choices[0].message
-                self.messages.append({
-                    "role": "assistant",
-                    "content": final_message.content
-                })
-
-                return final_message.content
-
-            else:
-                # No tool calls, just text response
-                self.messages.append({
-                    "role": "assistant",
-                    "content": message.content
-                })
-                return message.content
+            # Add assistant response to history
+            self.messages.append({
+                "role": "assistant",
+                "content": message.content
+            })
+            return message.content
 
         except Exception as e:
-            error_msg = f"小人该死，出错了：{str(e)}"
+            error_str = str(e)
+            # Handle authentication errors gracefully
+            if "401" in error_str or "Invalid Authentication" in error_str:
+                print(f"API authentication failed: {error_str}")
+                print("Falling back to demo mode...")
+                self.client = None  # Disable client for future calls
+                return self._demo_response(user_message, image_path)
+            error_msg = f"小人该死，出错了：{error_str}"
             return error_msg
 
     def reset_conversation(self):
