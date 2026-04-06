@@ -26,9 +26,8 @@ pip install -r requirements.txt
 # 必需
 GEMINI_API_KEY=your_gemini_api_key
 
-# 可选（备用方案）
+# 可选
 MOONSHOT_API_KEY=your_kimi_api_key
-SERPAPI_KEY=your_serpapi_key
 ```
 
 获取 Gemini API Key：[Google AI Studio](https://aistudio.google.com/app/apikey)
@@ -73,8 +72,7 @@ Gradio 界面展示
 ├── .env                    # API Keys（用户自备）
 ├── tools/
 │   ├── gemini_analyzer.py  # Gemini 3.1 Pro 分析模块
-│   ├── pricing_tool.py     # 定价工具（主入口）
-│   └── bing_visual_search.py # Google Lens 搜索（备用）
+│   └── pricing_tool.py     # 定价工具（主入口）
 └── extracted_clothes/      # 提取的衣物图片（运行时生成）
 ```
 

@@ -40,7 +40,7 @@ class WorkflowState(TypedDict):
     status: str  # Current workflow status
     vlm_analysis: Optional[dict]  # VLM clothing analysis results
     pricing_data: Optional[dict]  # Real pricing data from Xianyu query
-    bing_search_result: Optional[dict]  # Bing image search results
+    search_result: Optional[dict]  # Placeholder for any future search integration
 
 
 def create_initial_state() -> WorkflowState:
@@ -181,28 +181,6 @@ def evaluate_node(state: WorkflowState) -> WorkflowState:
         state["gemini_result"] = gemini_full_result or {}
         # Also store detailed description if available
         state["detailed_description"] = gemini_full_result.get("description", "") if gemini_full_result else ""
-
-        # Step 2: Google/SerpAPI Image Search for brand and price
-        add_log(state, "🔍 正在通过 Google Lens 查找同款...")
-        add_log(state, "   ├─ 连接 SerpAPI...")
-        search_result = {"success": False, "brand": None, "price": None, "title": None}
-        try:
-            from tools.bing_visual_search import search_clothing_on_google
-            add_log(state, "   ├─ 上传图片进行视觉匹配...")
-            search_result = search_clothing_on_google(image_path)
-            if search_result.get("success"):
-                add_log(state, "   ├─ ✓ 搜索完成，分析结果...")
-                add_log(state, f"   ├─ 识别品牌: {search_result.get('brand', '未识别')}")
-                add_log(state, f"   ├─ 参考价格: {search_result.get('price', '未找到')}")
-                add_log(state, f"   └─ 商品信息: {search_result.get('title', 'N/A')[:40]}...")
-            else:
-                add_log(state, f"   ⚠️ 搜索失败: {search_result.get('error', '未知错误')}")
-                add_log(state, "   回退到 Bing 视觉搜索...")
-        except Exception as e:
-            add_log(state, f"   ⚠️ 搜索异常: {e}")
-
-        # Store search result in state
-        state["bing_search_result"] = search_result
 
         # Update item name with VLM analysis results
         if vlm_analysis:
@@ -647,13 +625,12 @@ def run_upload_workflow_until_user_input(item: dict) -> WorkflowState:
     return state
 
 
-# ========== Pricing Agent Integration (Deprecated) ==========
-# Note: pricing_agent.py has been removed. Use Bing visual search instead.
+# ========== Pricing Analysis ==========
 
 def pricing_request_node(state: WorkflowState) -> WorkflowState:
     """
     Pricing Request Node: Triggered when user wants to check pricing.
-    Now uses Bing visual search instead of Xianyu.
+    Uses Gemini 3.1 Pro for visual analysis.
     """
     item = state.get("current_item")
     if not item:
@@ -690,16 +667,29 @@ def pricing_execute_node(state: WorkflowState) -> WorkflowState:
                 "listing_desc": "九成新，原价购入，现低价转让"
             }
         else:
-            # Call pricing agent
-            add_log(state, "📸 分析衣物图片...")
-            result = pricing_agent.analyze_and_price(image_path)
-            state["pricing_result"] = result
+            # Use Gemini for pricing analysis
+            add_log(state, "📸 Gemini 分析定价中...")
+            pricing_tool = PricingTool()
+            result = pricing_tool.analyze_with_gemini(image_path)
 
-            pricing = result.get("pricing", {})
-            add_log(state, f"✅ 定价分析完成！")
-            add_log(state, f"   ├─ 建议售价: ¥{pricing.get('suggested_price', 0)}")
-            add_log(state, f"   ├─ 样本数量: {pricing.get('sample_size', 0)} 件")
-            add_log(state, f"   └─ 价格区间: {pricing.get('price_range', 'N/A')}")
+            if result and result.get("success"):
+                state["pricing_result"] = result
+                official = result.get("official_price", {})
+                resale = result.get("resale_estimate", {})
+                add_log(state, f"✅ 定价分析完成！")
+                if official.get("amount"):
+                    add_log(state, f"   ├─ 官方指导价: {official['amount']} {official.get('currency', '')}")
+                if resale.get("max_price"):
+                    add_log(state, f"   ├─ 二手估价: ¥{resale['min_price']} - ¥{resale['max_price']}")
+                    add_log(state, f"   └─ 置信度: {resale.get('confidence', 'N/A')}")
+            else:
+                # Fallback to mock pricing
+                state["pricing_result"] = {
+                    "item_details": {"category": item.get("name", "Unknown"), "brand": "Unknown"},
+                    "official_price": {"amount": 0, "currency": "CNY"},
+                    "resale_estimate": {"min_price": 100, "max_price": 200, "confidence": "低"}
+                }
+                add_log(state, "⚠️ Gemini 定价失败，使用默认估价")
 
         state["status"] = "pricing_completed"
 
