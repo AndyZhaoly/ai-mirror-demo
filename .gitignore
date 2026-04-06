@@ -69,12 +69,17 @@ models/
 *.safetensors
 
 # Generated / Runtime files
-extracted_clothes/
-temp_upload.jpg
+extracted_clothes/*
+!extracted_clothes/.gitkeep
+temp_upload_*.jpg
 temp_*.jpg
 temp_*.png
 
-# Database (runtime mutable)
+# Debug files
+/tmp/last_search_*.txt
+/tmp/last_google_lens_*.json
+
+# Database (runtime mutable) - keep initial state
 database.json
 
 # Demo images (potential copyright issues)
