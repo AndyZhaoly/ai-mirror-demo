@@ -88,20 +88,19 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
     """
     Process image with real-time technical logging for left panel.
     Returns updates for both technical and chat panels.
-    Returns: tech_log, chat_msgs, upper_detection_img, upper_seg_img, lower_detection_img, lower_seg_img, approve_btn, reject_btn, search_results_gallery
+    Returns: tech_log, chat_msgs, upper_detection_img, upper_seg_img, lower_detection_img, lower_seg_img, approve_btn, reject_btn
     """
     global upload_workflow_state, last_extracted_items
 
     if image is None:
-        return tech_log, chat_history, None, None, None, None, gr.update(), gr.update(), []
+        return tech_log, chat_history, None, None, None, None, gr.update(), gr.update()
 
     logs = []
     chat_msgs = list(chat_history) if chat_history else []
-    search_result_images = []  # 存储搜索结果图片
 
     # Step 1: Save and start processing
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📷 接收到主人上传的图片...")
-    yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+    yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
 
     temp_path = f"./temp_upload_{generate_timestamp()}.jpg"
     image.save(temp_path)
@@ -110,7 +109,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
     # Step 2: GroundingDINO Detection
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 GroundingDINO 检测中...")
     logs.append("  └─ 使用提示词: 'shirt, jacket' / 'pants, shorts'")
-    yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+    yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
     time.sleep(0.8)
 
     # Detection images for display - paired by type
@@ -121,17 +120,17 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
     try:
         # Extract upper body
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✂️ SAM 分割处理上衣...")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
         upper_images, upper_detection = gsam_client.extract_upper_body(temp_path, white_background=True)
         logs.append(f"  └─ 检测到 {len(upper_images)} 个上衣区域")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
 
         # Extract lower body
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✂️ SAM 分割处理下装...")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
         lower_images, lower_detection = gsam_client.extract_lower_body(temp_path, white_background=True)
         logs.append(f"  └─ 检测到 {len(lower_images)} 个下装区域")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
 
         # Create cropped detection box visualizations for upper and lower
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎨 生成检测框裁剪图...")
@@ -201,18 +200,18 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
             detection_path = os.path.abspath(os.path.join(EXTRACTED_DIR, f"detection_{generate_timestamp()}.png"))
             combined_detection.save(detection_path)
 
-        yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None, gr.update(visible=False), gr.update(visible=False)
 
     except Exception as e:
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 错误: {str(e)}")
         import traceback
         logs.append(f"  └─ {traceback.format_exc()[:200]}")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
         return
 
     # Step 3: Save and register
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💾 保存分割结果...")
-    yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+    yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None, gr.update(visible=False), gr.update(visible=False)
 
     upper_output = None
     lower_output = None
@@ -273,7 +272,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
 
     logs.append(f"  └─ 已保存 {len(upper_images) + len(lower_images)} 件衣物")
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 处理完成！")
-    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
 
     # Step 4: AI Butler takes over - IMMEDIATE RESPONSE
     time.sleep(0.3)
@@ -294,7 +293,15 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
     chat_msgs.append({"role": "user", "content": "[上传了一张穿搭照片]"})
     immediate_response = agent_instance.analyze_and_price(temp_path, item_desc) if agent_instance else f"主人～这件{item_desc}好有品味！✨ 小镜正在帮您查市场行情..."
     chat_msgs.append({"role": "assistant", "content": immediate_response})
-    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+
+    # [新增] 把用户上传的图片和小镜的回复注入Agent记忆，保持上下文连贯
+    if agent_instance and last_extracted_items:
+        target_item_for_memory = last_extracted_items[0]
+        item_image = target_item_for_memory.get("image", temp_path)
+        agent_instance.inject_memory(role="user", content="帮我看看这件衣服能卖多少钱", image_path=item_image)
+        agent_instance.inject_memory(role="assistant", content=immediate_response)
+
+    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
 
     # Step 5: Background Analysis & Pricing (异步分析)
     # 现在运行 VLM + Google Lens 搜索，Agent已经在前面说"正在查了"
@@ -307,7 +314,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
 
         # Show Gemini analysis in technical log
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 调用 Gemini 3.1 Pro 分析...")
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
 
         # Run workflow (Gemini analysis)
         upload_workflow_state = run_upload_workflow_until_user_input(target_item)
@@ -343,7 +350,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
             logs.append(f"  └─ Agent 正在生成定价建议...")
         else:
             logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Gemini 分析未返回完整结果")
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
 
         # Step 6: Agent 生成自然的定价分析
         time.sleep(0.5)  # 稍微停顿，让"正在分析"的感觉更真实
@@ -352,7 +359,26 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
 
         # 添加 Agent 的定价分析到对话
         chat_msgs.append({"role": "assistant", "content": price_analysis})
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+
+        # [新增] 把小镜的定价分析注入记忆，同时隐式注入参考链接
+        if agent_instance:
+            # 构建参考链接的隐藏上下文
+            reference_sources = gemini_result.get("reference_sources", [])
+            hidden_context = None
+            if reference_sources:
+                links_text = "\n".join([
+                    f"- {src.get('title', '来源')}: {src.get('url', '')}"
+                    for src in reference_sources[:3]
+                ])
+                hidden_context = f"参考价格来源：\n{links_text}\n如果用户询问'你从哪查到的'、'参考链接在哪'，请回复这些来源。"
+
+            agent_instance.inject_memory(
+                role="assistant",
+                content=price_analysis,
+                hidden_context=hidden_context
+            )
+
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
 
         # Step 7: 检查是否闲置，给出出售建议
         time.sleep(0.3)
@@ -364,48 +390,91 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
 
             stagnant_prompt = f"对了主人～ 💡\n\n小镜顺便查了一下，发现这件**{item_name}**已经在您的衣橱中静置**400余天**了...\n\n既然主人平时不怎么穿它，要不要趁现在行情好出手呢？小镜可以帮您发布到二手市场，说不定很快就有人买走啦～✨"
             chat_msgs.append({"role": "assistant", "content": stagnant_prompt})
-            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=True), gr.update(visible=True), search_result_images
+
+            # [新增] 把闲置提示也注入记忆
+            if agent_instance:
+                agent_instance.inject_memory(role="assistant", content=stagnant_prompt)
+
+            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=True), gr.update(visible=True)
 
         elif status == "api_overloaded":
             api_busy_msg = "对了主人～ ⚠️\n\n小镜的AI大脑刚才有点忙，价格分析可能不够完整。主人可以直接问我'这件能卖多少钱'，小镜再帮您查查！"
             chat_msgs.append({"role": "assistant", "content": api_busy_msg})
-            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
 
     else:
         # No agent or no items extracted
         chat_msgs.append({"role": "user", "content": "[上传了一张穿搭照片]"})
         chat_msgs.append({"role": "assistant", "content": f"已为您提取 {len(upper_images) + len(lower_images)} 件衣物。看起来都是很棒的衣服呢！主人有什么想了解的，随时问我～"})
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
 
 
-def approve_sale_from_chat():
+def approve_sale_from_chat(history):
     """Handle sale approval from chat."""
-    global upload_workflow_state
+    global upload_workflow_state, agent_instance
+
+    history = list(history) if history else []
 
     if not upload_workflow_state:
-        return "请先上传图片进行处理", gr.update(visible=False), gr.update(visible=False)
+        history.append({"role": "assistant", "content": "请先上传图片进行处理"})
+        return history, gr.update(visible=False), gr.update(visible=False)
 
     # Pass the upload workflow state to resume correctly
     final_state = resume_workflow(user_approved=True, initial_state=upload_workflow_state)
 
     if not final_state:
-        return "交易失败，请重试", gr.update(visible=False), gr.update(visible=False)
+        history.append({"role": "assistant", "content": "交易失败，请重试"})
+        return history, gr.update(visible=False), gr.update(visible=False)
 
     tracking = final_state.get("tracking_info", {})
     item = final_state.get("current_item", {})
     price = final_state.get("buyer_offer", {}).get("offer_price", "N/A")
 
-    response = f"✨ 太好了主人！\n\n这件**{item.get('name', '美衣')}**已经成功安排出售啦！预估成交价 **¥{price}**～\n\n小镜这就帮您打包发货！📦\n\n• 物流：{tracking.get('carrier', '顺丰')}\n• 单号：`{tracking.get('tracking_number', 'SF123456')}`\n• 预计：{tracking.get('estimated_delivery', '3天内送达')}\n\n钱到账了第一时间通知主人！需要小镜帮您找新款吗？😊"
+    # 使用 Agent 生成发布模板 (In-Context Learning)
+    gemini_result = final_state.get("gemini_result", {})
+    listing_template = ""
+    if agent_instance:
+        listing_template = agent_instance.generate_listing_template(
+            gemini_result=gemini_result,
+            item_name=item.get('name', '美衣'),
+            price=str(price)
+        )
+    else:
+        listing_template = "（Agent 未初始化，无法生成发布模板）"
 
-    return response, gr.update(visible=False), gr.update(visible=False)
+    response = f"""✨ 太好了主人！
+
+这件**{item.get('name', '美衣')}**已经成功安排出售啦！预估成交价 **¥{price}**～
+
+小镜这就帮您打包发货！📦
+
+• 物流：{tracking.get('carrier', '顺丰')}
+• 单号：`{tracking.get('tracking_number', 'SF123456')}`
+• 预计：{tracking.get('estimated_delivery', '3天内送达')}
+
+钱到账了第一时间通知主人！
+
+━━━━━━━━━━━━━━━━━━━━━━━
+
+{listing_template}
+
+━━━━━━━━━━━━━━━━━━━━━━━
+
+💡 小镜提示：复制上方模板到闲鱼/小红书即可发布！需要小镜帮您找新款吗？😊"""
+
+    history.append({"role": "assistant", "content": response})
+    return history, gr.update(visible=False), gr.update(visible=False)
 
 
-def reject_sale_from_chat():
+def reject_sale_from_chat(history):
     """Handle sale rejection from chat."""
     global upload_workflow_state
 
+    history = list(history) if history else []
+
     if not upload_workflow_state:
-        return "已取消", gr.update(visible=False), gr.update(visible=False)
+        history.append({"role": "assistant", "content": "已取消"})
+        return history, gr.update(visible=False), gr.update(visible=False)
 
     # Pass the upload workflow state to resume correctly
     final_state = resume_workflow(user_approved=False, initial_state=upload_workflow_state)
@@ -413,7 +482,8 @@ def reject_sale_from_chat():
 
     response = f"好的主人～ 💕 这件**{item.get('name', '美衣')}**还是留在您身边吧！说不定哪天主人突然想穿了，它又会成为您的心头好～ 小镜随时待命！"
 
-    return response, gr.update(visible=False), gr.update(visible=False)
+    history.append({"role": "assistant", "content": response})
+    return history, gr.update(visible=False), gr.update(visible=False)
 
 
 def chat_with_butler_stream(message, image_path, history):
@@ -464,16 +534,12 @@ def chat_with_butler_stream(message, image_path, history):
         yield updated_history, ""
         return
 
-    # Step 5: Check if pricing query and auto-attach last item image
+    # Step 5: Check if user uploaded a new image
+    # Note: If no new image, agent relies on injected memory from previous interactions
     chat_image_path = image_path
-    if not chat_image_path and last_extracted_items:
-        # Check if message contains pricing keywords
-        pricing_keywords = ["价格", "定价", "卖多少", "能卖", "值多少", "估价", "查价", "多少钱", "市场价", "参考价", "出售", "卖掉", "卖了"]
-        if any(kw in message for kw in pricing_keywords):
-            # Use the last extracted item's image for pricing analysis
-            last_item = last_extracted_items[-1]
-            chat_image_path = last_item.get("image")
-            print(f"[Pricing Query] Auto-attaching image: {chat_image_path}")
+    if chat_image_path and agent_instance:
+        # Save to agent's memory for future tool calls
+        agent_instance.last_image_path = chat_image_path
 
     # Step 6: Get AI response
     response = agent_instance.chat(message, chat_image_path)
@@ -542,8 +608,7 @@ def reset_demo():
         None,
         None,
         gr.update(visible=False),
-        gr.update(visible=False),
-        []  # search_result_images empty
+        gr.update(visible=False)
     )
 
 
@@ -641,19 +706,6 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
                     height=200
                 )
 
-            # Google Lens 搜索结果
-            gr.Markdown("#### 🔍 Google Lens 搜索结果")
-            gr.Markdown("*相似商品匹配*")
-            search_results_gallery = gr.Gallery(
-                label="",
-                show_label=False,
-                columns=4,
-                rows=2,
-                height=300,
-                interactive=False,
-                visible=True
-            )
-
         # ========== RIGHT PANEL: AI Butler Chat ==========
         with gr.Column(scale=1):
             gr.Markdown("### 💬 AI 时尚管家")
@@ -699,17 +751,19 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
     process_btn.click(
         fn=process_with_technical_log,
         inputs=[upload_image, item_prefix, tech_log, chatbot],
-        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn, search_results_gallery],
+        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn],
         show_progress=True
     )
 
     approve_btn.click(
         fn=approve_sale_from_chat,
+        inputs=[chatbot],
         outputs=[chatbot, approve_btn, reject_btn]
     )
 
     reject_btn.click(
         fn=reject_sale_from_chat,
+        inputs=[chatbot],
         outputs=[chatbot, approve_btn, reject_btn]
     )
 
@@ -736,11 +790,11 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
 
     reset_btn.click(
         fn=reset_demo,
-        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn, search_results_gallery]
+        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn]
     )
 
     # Auto-reset on load
-    demo.load(reset_demo, outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn, search_results_gallery])
+    demo.load(reset_demo, outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn])
 
 if __name__ == "__main__":
     demo.launch(

@@ -53,19 +53,15 @@ class PricingTool:
             print(f"[PricingTool] Image not found: {image_path}")
             return None
 
-        # 使用 Gemini 分析
+        # 使用 Gemini 分析（启用 Google Search 获取实时价格参考）
         if self.gemini_analyzer:
             try:
-                result = self.gemini_analyzer.analyze(image_path, max_retries=max_retries)
+                result = self.gemini_analyzer.analyze(image_path, max_retries=max_retries, use_search=True)
                 if result and result.get("success"):
                     # 转换为统一格式
                     return self._convert_gemini_result(result)
             except Exception as e:
                 print(f"[PricingTool] Gemini analysis failed: {e}")
-
-        # 回退：使用 Google Lens 搜索
-        print("[PricingTool] Falling back to Google Lens...")
-        return self._fallback_to_search(image_path)
 
     def _convert_gemini_result(self, gemini_result: Dict) -> Dict[str, Any]:
         """将 Gemini 结果转换为统一格式"""
@@ -87,34 +83,10 @@ class PricingTool:
             },
             "official_price": gemini_result.get("official_price", {}),
             "resale_estimate": gemini_result.get("resale_estimate", {}),
+            "reference_sources": gemini_result.get("reference_sources", []),  # 参考链接
             "description": gemini_result.get("description", ""),
             "full_analysis": gemini_result
         }
-
-    def _fallback_to_search(self, image_path: str) -> Optional[Dict[str, Any]]:
-        """回退到 Google Lens 搜索"""
-        try:
-            from tools.bing_visual_search import search_clothing_on_google
-            result = search_clothing_on_google(image_path)
-
-            if result and result.get("success"):
-                return {
-                    "success": True,
-                    "source": "google_lens",
-                    "item_details": {
-                        "brand": result.get("brand", "Unknown"),
-                        "category": "",
-                        "confidence": "中"
-                    },
-                    "pricing": {
-                        "suggested_price": result.get("price", "未知"),
-                        "source": "Google Lens"
-                    }
-                }
-        except Exception as e:
-            print(f"[PricingTool] Search fallback failed: {e}")
-
-        return None
 
     def query_market_price(self, brand: str, category: str = "") -> Optional[Dict[str, Any]]:
         """
@@ -210,12 +182,14 @@ class PricingTool:
         }
 
         # Step 3: 生成报告
+        reference_sources = analysis.get("reference_sources", [])
         result = {
             "success": True,
             "analysis_source": analysis.get("source", "unknown"),
             "model_used": analysis.get("model_used", ""),
             "item_details": item_details,
             "pricing": pricing,
+            "reference_sources": reference_sources,  # 参考链接来源
             "description": analysis.get("description", ""),
             "processing_time": analysis_time
         }
@@ -225,6 +199,8 @@ class PricingTool:
         print(f"  Model: {item_details.get('model_name', 'N/A')}")
         print(f"  Official: {official_price.get('amount', 'N/A')} {official_price.get('currency', '')}")
         print(f"  Resale: {resale_estimate.get('min_price', 'N/A')} - {resale_estimate.get('max_price', 'N/A')} CNY")
+        if reference_sources:
+            print(f"  References: {len(reference_sources)} sources found")
         print(f"{'='*50}\n")
 
         return result
@@ -243,6 +219,7 @@ def generate_pricing_report(result: Dict[str, Any]) -> str:
     pricing = result.get("pricing", {})
     official = pricing.get("official_price", {})
     resale = pricing.get("resale_estimate", {})
+    reference_sources = result.get("reference_sources", [])
 
     report = f"""📊 **Gemini 智能分析报告**
 
@@ -257,7 +234,23 @@ def generate_pricing_report(result: Dict[str, Any]) -> str:
 💰 **价格参考**
 • 官方指导价: {official.get('amount', 'N/A')} {official.get('currency', '')}
 • 二手建议价: ¥{resale.get('min_price', 0)} - ¥{resale.get('max_price', 0)}
-• 置信度: {pricing.get('confidence', '低')}
+• 置信度: {pricing.get('confidence', '低')}"""
+
+    # 添加参考链接（如果有）
+    if reference_sources:
+        report += "\n\n🔗 **参考来源**"
+        for i, source in enumerate(reference_sources[:3], 1):  # 最多显示3个
+            title = source.get('title', '未知来源')[:40]
+            url = source.get('url', '')
+            domain = source.get('domain', '')
+            if url:
+                report += f"\n{i}. [{title}]({url})"
+            elif domain:
+                report += f"\n{i}. {title} ({domain})"
+            else:
+                report += f"\n{i}. {title}"
+
+    report += f"""
 
 📝 **商品描述**
 {result.get('description', '无')[:200]}...

@@ -55,6 +55,146 @@
       "status": "in_closet",
       "original_price": 499,
       "image": "images/green_bomber.jpg"
+    },
+    {
+      "item_id": "0AC9E627",
+      "name": "提取的上衣_1",
+      "clothing_type": "upper",
+      "date_added": "2026-04-06T19:38:44.918834",
+      "purchase_date": "2025-01-23",
+      "last_worn_date": "2025-01-23",
+      "status": "in_closet",
+      "original_price": 355,
+      "image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/upper_detection_crop_0406_193844.png",
+      "detection_image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/detection_0406_193844.png",
+      "extracted_from": "/Users/liyangzhao/Desktop/智能镜/Demo/temp_upload_0406_193803.jpg",
+      "vlm_brand": "By Quaint",
+      "vlm_category": "女装外套 (Women's Jacket)",
+      "vlm_material": "80% 羊毛 (Wool), 20% 羊绒 (Cashmere)",
+      "vlm_condition": "二手良好 (Good)",
+      "vlm_product_code": null,
+      "vlm_model_name": "Synnove Patchwork Asymmetrical Short Coat",
+      "vlm_official_price": {
+        "currency": "CNY",
+        "amount": 1500
+      },
+      "vlm_resale_estimate": {
+        "currency": "CNY",
+        "min_price": 300,
+        "max_price": 600,
+        "confidence": "中"
+      },
+      "vlm_description": "该单品为 By Quaint 推出的 Synnove 不对称拼接千鸟格短款外套。设计上采用了复古的黑色撞色立领、不对称前襟剪裁、左胸贴边口袋以及做旧风格的金色浮雕纽扣。面料采用80%羊毛与20%羊绒混纺，质感厚实。由于 By Quaint 属于相对小众的设计师/快时尚品牌，其在二手市场的流通量和保值率相对有限，二手交易价格通常在原价的2至4折之间。",
+      "analysis_source": "gemini"
+    },
+    {
+      "item_id": "847A4A52",
+      "name": "提取的上衣_2",
+      "clothing_type": "upper",
+      "date_added": "2026-04-06T19:38:44.930952",
+      "purchase_date": "2025-03-10",
+      "last_worn_date": "2025-03-10",
+      "status": "in_closet",
+      "original_price": 110,
+      "image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/upper_1_0406_193844.png",
+      "detection_image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/detection_0406_193844.png",
+      "extracted_from": "/Users/liyangzhao/Desktop/智能镜/Demo/temp_upload_0406_193803.jpg"
+    },
+    {
+      "item_id": "9B302260",
+      "name": "提取的下装_1",
+      "clothing_type": "lower",
+      "date_added": "2026-04-06T19:38:44.946430",
+      "purchase_date": "2025-03-08",
+      "last_worn_date": "2025-03-08",
+      "status": "in_closet",
+      "original_price": 332,
+      "image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/lower_detection_crop_0406_193844.png",
+      "detection_image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/detection_0406_193844.png",
+      "extracted_from": "/Users/liyangzhao/Desktop/智能镜/Demo/temp_upload_0406_193803.jpg"
+    },
+    {
+      "item_id": "97CC2213",
+      "name": "提取的下装_2",
+      "clothing_type": "lower",
+      "date_added": "2026-04-06T19:38:44.961121",
+      "purchase_date": "2025-01-29",
+      "last_worn_date": "2025-01-29",
+      "status": "in_closet",
+      "original_price": 213,
+      "image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/lower_1_0406_193844.png",
+      "detection_image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/detection_0406_193844.png",
+      "extracted_from": "/Users/liyangzhao/Desktop/智能镜/Demo/temp_upload_0406_193803.jpg"
+    },
+    {
+      "item_id": "CCAF1BD8",
+      "name": "提取的上衣_1",
+      "clothing_type": "upper",
+      "date_added": "2026-04-06T19:44:12.693519",
+      "purchase_date": "2025-02-12",
+      "last_worn_date": "2025-02-12",
+      "status": "in_closet",
+      "original_price": 263,
+      "image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/upper_detection_crop_0406_194412.png",
+      "detection_image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/detection_0406_194412.png",
+      "extracted_from": "/Users/liyangzhao/Desktop/智能镜/Demo/temp_upload_0406_194322.jpg",
+      "vlm_brand": "Gucci",
+      "vlm_category": "女装/连衣裙",
+      "vlm_material": "蕾丝 (棉/锦纶/粘胶纤维混纺)",
+      "vlm_condition": "二手良好",
+      "vlm_product_code": null,
+      "vlm_model_name": "Green Lace Zip-Front Midi Dress with Web Belt",
+      "vlm_official_price": {
+        "currency": "CNY",
+        "amount": 24000
+      },
+      "vlm_resale_estimate": {
+        "currency": "CNY",
+        "min_price": 3500,
+        "max_price": 8500,
+        "confidence": "高"
+      },
+      "vlm_description": "这件连衣裙是 Gucci（古驰）的经典秀场款式，带有强烈的前创意总监 Alessandro Michele 的复古美学风格。裙身采用绿色花卉蕾丝面料，深V领口带有荷叶边装饰，正面配有贯穿的银色拉链设计。腰部饰有 Gucci 标志性的红蓝配色 Web 织带（Web Stripe）和银色圆环细节，具有极高的品牌辨识度。",
+      "analysis_source": "gemini"
+    },
+    {
+      "item_id": "831DA6F0",
+      "name": "提取的上衣_2",
+      "clothing_type": "upper",
+      "date_added": "2026-04-06T19:44:12.711316",
+      "purchase_date": "2025-02-12",
+      "last_worn_date": "2025-02-12",
+      "status": "in_closet",
+      "original_price": 135,
+      "image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/upper_1_0406_194412.png",
+      "detection_image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/detection_0406_194412.png",
+      "extracted_from": "/Users/liyangzhao/Desktop/智能镜/Demo/temp_upload_0406_194322.jpg"
+    },
+    {
+      "item_id": "E6CF91B4",
+      "name": "提取的下装_1",
+      "clothing_type": "lower",
+      "date_added": "2026-04-06T19:44:12.723742",
+      "purchase_date": "2025-01-23",
+      "last_worn_date": "2025-01-23",
+      "status": "in_closet",
+      "original_price": 373,
+      "image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/lower_detection_crop_0406_194412.png",
+      "detection_image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/detection_0406_194412.png",
+      "extracted_from": "/Users/liyangzhao/Desktop/智能镜/Demo/temp_upload_0406_194322.jpg"
+    },
+    {
+      "item_id": "9EA2CB59",
+      "name": "提取的下装_2",
+      "clothing_type": "lower",
+      "date_added": "2026-04-06T19:44:12.734618",
+      "purchase_date": "2025-01-16",
+      "last_worn_date": "2025-01-16",
+      "status": "in_closet",
+      "original_price": 281,
+      "image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/lower_1_0406_194412.png",
+      "detection_image": "/Users/liyangzhao/Desktop/智能镜/Demo/extracted_clothes/detection_0406_194412.png",
+      "extracted_from": "/Users/liyangzhao/Desktop/智能镜/Demo/temp_upload_0406_194322.jpg"
     }
   ]
 }

@@ -9,7 +9,6 @@ from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 from openai import OpenAI, RateLimitError, APIError
 from tools import PricingTool, generate_pricing_report
-from tools.bing_visual_search import search_clothing_on_google
 import time
 
 # Moonshot API configuration
@@ -56,7 +55,11 @@ SYSTEM_PROMPT = """
 【工具使用】
 - segment_clothes: 提取衣物时使用，完成后礼貌、带正面情绪价值的方式告知
 - check_wardrobe_stagnancy: 检查闲置时使用，发现后要温馨提醒
-- search_clothing_price: 用户询问"这件能卖多少钱"、"查价格"、"定价"等时使用，通过 Bing 视觉搜索获取品牌和价格参考。重要：如果用户问价格但没有提供新图片，直接使用之前对话中已经上传的图片路径，不要询问用户图片在哪里
+
+【隐式记忆 - 小镜知道但用户看不到的信息】
+- 每次分析完成后，小镜会在记忆里记录参考来源链接
+- 当主人问"你从哪查到的"、"参考链接在哪"时，直接从记忆中提取并回复
+- 不需要调用工具，因为小镜早就知道答案
 
 【禁忌】
 - 绝不说"这件不好看"。如果主人表达了相关意思，可以跟着话题询问是否要帮忙处理，但不可以说这件衣服不好看
@@ -92,11 +95,11 @@ class MirrorAgent:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
 
-        # Initialize PricingTool
-        self.pricing_tool = PricingTool()
-
         # Store last uploaded image path for tool calls
         self.last_image_path: Optional[str] = None
+
+        # Store reference sources from Gemini analysis for user queries
+        self.last_reference_sources: List[Dict[str, str]] = []
 
         # Tool definitions for function calling
         self.tools = [
@@ -134,52 +137,18 @@ class MirrorAgent:
                     }
                 }
             },
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_clothing_price",
-                    "description": "使用 Bing 视觉搜索查找相似服装的市场价格，返回品牌信息和价格参考",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "image_path": {
-                                "type": "string",
-                                "description": "衣物图片的本地路径"
-                            }
-                        },
-                        "required": ["image_path"]
-                    }
-                }
-            }
         ]
 
         # Tool handlers (to be injected from outside)
         self.tool_handlers: Dict[str, Callable] = {}
 
+        # Register tool handlers
+        self.register_tool("segment_clothes", lambda **kwargs: {"status": "success"})
+        self.register_tool("check_wardrobe_stagnancy", lambda **kwargs: {"stagnant": False})
+
     def register_tool(self, name: str, handler: Callable):
         """Register a tool handler function."""
         self.tool_handlers[name] = handler
-
-    def search_clothing_price(self, image_path: str = None) -> Dict[str, Any]:
-        """
-        使用 Bing 视觉搜索查找相似服装价格。
-
-        Args:
-            image_path: Path to clothing image. If not provided, uses last uploaded image.
-
-        Returns:
-            Search results with brand and price info
-        """
-        # Use stored image path if none provided
-        if not image_path and self.last_image_path:
-            image_path = self.last_image_path
-
-        if not image_path:
-            return {"error": "没有可用的图片，请先上传一张图片"}
-
-        print(f"[Tool] 正在用 Bing 搜索: {image_path}")
-        result = search_clothing_on_google(image_path)
-        return result
 
     def _demo_response(self, user_message: str, image_path: str = None) -> str:
         """Generate demo responses when API key is not available."""
@@ -201,6 +170,36 @@ class MirrorAgent:
         with open(image_path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
 
+    def inject_memory(self, role: str, content: str, image_path: str = None, hidden_context: str = None):
+        """
+        手动将外部流程生成的内容注入到Agent的记忆数组中，保持上下文连贯
+        :param hidden_context: 仅供大模型读取的隐藏信息（如参考链接），不会显示在前端UI
+        """
+        # 构建给大模型看的完整文本（包含隐藏信息）
+        llm_text = content
+        if hidden_context:
+            # 用特殊符号包裹隐藏信息，告诉Agent这是内部数据
+            llm_text = f"{content}\n\n[系统记录：{hidden_context}]"
+
+        if image_path and os.path.exists(image_path):
+            base64_image = self.encode_image_to_base64(image_path)
+            msg_content = [
+                {"type": "text", "text": llm_text},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}"
+                    }
+                }
+            ]
+        else:
+            msg_content = llm_text
+
+        self.messages.append({
+            "role": role,
+            "content": msg_content
+        })
+
     def chat(self, user_message: str, image_path: str = None) -> str:
         """
         Send a message to the agent and get response.
@@ -219,6 +218,13 @@ class MirrorAgent:
         # Demo mode: return hardcoded responses if no API key
         if self.client is None:
             return self._demo_response(user_message, image_path)
+
+        # 滑动窗口：保留 System Prompt + 最近 10 轮对话（20 条消息）
+        MAX_HISTORY = 20  # 10 轮对话 = 20 条消息（user + assistant）
+        if len(self.messages) > MAX_HISTORY + 1:  # +1 for system prompt
+            # 保留 system prompt 和最近 MAX_HISTORY 条
+            self.messages = [self.messages[0]] + self.messages[-MAX_HISTORY:]
+            print(f"[MirrorAgent] History trimmed to {len(self.messages)} messages")
 
         # Build user message
         if image_path and os.path.exists(image_path):
@@ -271,10 +277,7 @@ class MirrorAgent:
                         print(f"[Tool Call] {function_name}({function_args})")
 
                         # Execute the tool
-                        if function_name == "search_clothing_price":
-                            result = self.search_clothing_price(function_args.get("image_path"))
-                            tool_result = json.dumps(result, ensure_ascii=False)
-                        elif function_name in self.tool_handlers:
+                        if function_name in self.tool_handlers:
                             handler = self.tool_handlers[function_name]
                             result = handler(**function_args)
                             tool_result = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
@@ -488,6 +491,11 @@ class MirrorAgent:
         official = gemini_result.get("official_price", {})
         resale = gemini_result.get("resale_estimate", {})
 
+        # 存储参考链接供后续查询
+        self.last_reference_sources = gemini_result.get("reference_sources", [])
+        if self.last_reference_sources:
+            print(f"[Agent] Stored {len(self.last_reference_sources)} reference sources")
+
         brand = item.get("brand", "Unknown")
         model = item.get("model_name", "")
         product_code = item.get("product_code", "")
@@ -553,9 +561,9 @@ class MirrorAgent:
                 lines.append(f"价格亲民，流通性好，应该很快就能卖掉～ 🛍️")
 
             if confidence == "高":
-                lines.append("\n✅ Gemini 对这次识别很有信心，信息应该比较准确！")
+                lines.append("\n小镜对这次估价很有把握，主人可以放心参考！")
             elif confidence == "中":
-                lines.append("\n⚠️ 建议主人可以再核实一下品牌和型号～")
+                lines.append("\n小镜觉得大概是这样，但主人也可以再确认一下～")
         else:
             lines.append("小镜暂时没找到这款的二手参考价格...")
             lines.append("建议主人可以根据品牌知名度自行定价～")
@@ -565,23 +573,244 @@ class MirrorAgent:
 
         return "\n".join(lines)
 
+    def generate_listing_template(self, gemini_result: Dict, item_name: str = "", price: str = "") -> str:
+        """
+        使用 In-Context Learning 生成闲鱼/小红书发布模板
+
+        Args:
+            gemini_result: Gemini 分析结果
+            item_name: 商品名称
+            price: 成交价格
+
+        Returns:
+            生成的发布模板
+        """
+        if not self.client:
+            # Demo mode: 返回简单模板
+            return self._generate_simple_template(gemini_result, item_name, price)
+
+        item = gemini_result.get("item_details", {}) if gemini_result else {}
+        official = gemini_result.get("official_price", {}) if gemini_result else {}
+        resale = gemini_result.get("resale_estimate", {}) if gemini_result else {}
+
+        brand = item.get("brand", "Unknown")
+        model = item.get("model_name", "")
+        product_code = item.get("product_code", "N/A")
+        category = item.get("category", "单品")
+        material = item.get("material", "")
+        condition = item.get("condition", "几乎全新")
+
+        suggested_price = resale.get("max_price", 0) if resale else 0
+        if not suggested_price:
+            suggested_price = int(official.get("amount", 999) * 0.6) if official else 999
+
+        official_price_str = ""
+        if official.get("amount"):
+            official_price_str = f"{official['amount']} {official.get('currency', '')}"
+
+        # In-Context Learning Prompt with examples
+        prompt = f"""
+请为以下商品生成闲鱼和小红书发布模板。
+
+【商品信息】
+- 品牌：{brand}
+- 型号：{model if model else category}
+- 货号：{product_code}
+- 类别：{category}
+- 材质：{material if material else '未说明'}
+- 成色：{condition}
+- 原价：{official_price_str if official_price_str else '专柜正品'}
+- 建议售价：¥{suggested_price}
+
+【参考示例 - 闲鱼模板】
+
+📝 标题：
+【98新】Louis Vuitton Dark Floral Print Jacket 正品保证
+
+💰 价格：¥25000
+
+📖 描述：
+✨ Louis Vuitton Dark Floral Print Jacket
+📦 货号：1AJYH4
+🎨 材质：100% 锦纶
+📏 成色：几乎全新
+💎 原价：3500 EUR
+🔥 现价：¥25000（可小刀）
+
+✅ 正品保证，支持验货宝
+✅ 顺丰包邮，当天发货
+✅ 细节图可私聊
+
+🏷️ 标签：
+#LouisVuitton #夹克 #二手闲置 #奢侈品 #正品保证
+
+【参考示例 - 小红书模板】
+
+标题：断舍离 | Louis Vuitton 印花夹克 寻找新主人
+
+正文：
+姐妹们！这件LV印花夹克要出啦～
+
+✨ 基本信息：
+• 品牌：Louis Vuitton
+📦 货号：1AJYH4
+• 成色：几乎全新
+• 价格：¥25000
+
+💕 使用感受：
+这件衣服质感超好，100%锦纶面料，
+因为闲置了一段时间，决定断舍离给它找个新主人～
+
+📦 交易方式：
+走平台（闲鱼），支持验货宝，顺丰包邮
+
+喜欢的姐妹私我哦！💌
+
+#断舍离 #LouisVuitton #闲置转让 #夹克
+
+---
+
+请根据以上商品信息，生成类似的发布模板，保持格式和风格一致。模板要专业、吸引人，适合二手交易。请生成【闲鱼模板】和【小红书模板】两部分，用分隔线隔开。
+
+输出格式：
+📋 【闲鱼发布模板】（可直接复制使用）
+...
+📕 【小红书发布模板】
+...
+"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一个专业的二手奢侈品交易文案撰写专家，擅长写吸引人的闲鱼和小红书发布文案。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.8,
+                max_tokens=1500
+            )
+
+            template = response.choices[0].message.content
+            return template
+
+        except Exception as e:
+            print(f"[Template Generation Error] {e}")
+            return self._generate_simple_template(gemini_result, item_name, price)
+
+    def _generate_simple_template(self, gemini_result: Dict, item_name: str, price: str) -> str:
+        """当 API 不可用时生成简单模板"""
+        item = gemini_result.get("item_details", {}) if gemini_result else {}
+        brand = item.get("brand", "")
+        model = item.get("model_name", "")
+        condition = item.get("condition", "几乎全新")
+
+        template = f"""📋 【闲鱼发布模板】
+
+📝 标题：
+【{condition}】{brand} {model if model else item_name} 正品保证
+
+💰 价格：{price}
+
+📖 描述：
+✨ {brand} {model if model else item_name}
+📏 成色：{condition}
+✅ 正品保证
+✅ 顺丰包邮
+
+🏷️ 标签：#{brand.replace(' ', '') if brand else '二手闲置'} #闲置转让
+
+📕 【小红书发布模板】
+
+标题：断舍离 | {brand} {model if model else item_name} 寻找新主人
+
+正文：
+姐妹们！这件{brand} {model if model else item_name}要出啦～
+
+✨ 基本信息：
+• 品牌：{brand}
+• 成色：{condition}
+• 价格：{price}
+
+💕 使用感受：
+这件衣服质感超好，因为闲置了一段时间，决定断舍离给它找个新主人～
+
+📦 交易方式：走平台（闲鱼）
+
+喜欢的姐妹私我哦！💌
+
+#断舍离 #{brand.replace(' ', '') if brand else '闲置'} #闲置转让
+"""
+        return template
+
+    def get_reference_sources(self) -> str:
+        """
+        获取上次分析的参考链接，用于回答用户追问
+
+        Returns:
+            格式化的参考来源文本
+        """
+        if not self.last_reference_sources:
+            return "小镜这次没有找到具体的参考链接呢～价格是基于 Gemini 的实时搜索数据分析得出的。"
+
+        lines = ["小镜为您找到了以下参考来源："]
+        for i, source in enumerate(self.last_reference_sources[:5], 1):
+            title = source.get('title', '未知来源')[:50]
+            url = source.get('url', '')
+            domain = source.get('domain', '')
+
+            if url:
+                lines.append(f"{i}. {title}")
+                lines.append(f"   链接: {url}")
+            elif domain:
+                lines.append(f"{i}. {title} ({domain})")
+            else:
+                lines.append(f"{i}. {title}")
+
+        lines.append("\n主人可以点击链接查看详情哦～")
+        return "\n".join(lines)
+
     def reset_conversation(self):
         """Reset conversation history (keeping system prompt)."""
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.last_reference_sources = []  # 同时清空参考链接
 
     def get_conversation_history(self) -> List[Dict[str, Any]]:
         """Get current conversation history (for UI display)."""
-        # Filter out system messages and tool internals for display
+        import re
         display_history = []
         for msg in self.messages:
             if msg["role"] == "system":
                 continue
             if msg["role"] == "tool":
                 continue  # Skip tool results
-            display_history.append({
-                "role": msg["role"],
-                "content": msg["content"] if isinstance(msg["content"], str) else "[图片]"
-            })
+
+            content = msg["content"]
+            display_text = ""
+            has_image = False
+
+            if isinstance(content, str):
+                display_text = content
+            elif isinstance(content, list):
+                # 遍历 list 提取文字和图片
+                for item in content:
+                    if item.get("type") == "text":
+                        display_text += item.get("text", "")
+                    elif item.get("type") == "image_url":
+                        has_image = True
+
+            # 过滤掉 [系统记录：...] 隐藏信息
+            display_text = re.sub(r'\[系统记录：.*?\]', '', display_text, flags=re.DOTALL).strip()
+
+            # 如果有图片，在末尾加上标识
+            if has_image:
+                display_text += "\n[图片]"
+
+            if display_text.strip():
+                display_history.append({
+                    "role": msg["role"],
+                    "content": display_text.strip()
+                })
+
         return display_history
 
 
