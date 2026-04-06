@@ -3,7 +3,9 @@ FashionClaw LangGraph Workflow
 Implements the multi-agent system for intelligent wardrobe management.
 """
 import json
+import os
 import random
+import time
 from typing import TypedDict, List, Optional
 from datetime import datetime
 
@@ -18,6 +20,10 @@ from mock_apis import (
     update_item_status,
 )
 from database_manager import is_stagnant
+from tools import PricingTool, generate_pricing_report
+
+# Global PricingTool instance
+pricing_tool = PricingTool()
 
 
 class WorkflowState(TypedDict):
@@ -32,6 +38,9 @@ class WorkflowState(TypedDict):
     tracking_info: Optional[dict]
     log_messages: List[str]  # For display in UI
     status: str  # Current workflow status
+    vlm_analysis: Optional[dict]  # VLM clothing analysis results
+    pricing_data: Optional[dict]  # Real pricing data from Xianyu query
+    bing_search_result: Optional[dict]  # Bing image search results
 
 
 def create_initial_state() -> WorkflowState:
@@ -99,7 +108,7 @@ def monitor_node(state: WorkflowState) -> WorkflowState:
 
 def evaluate_node(state: WorkflowState) -> WorkflowState:
     """
-    Evaluate Node: Calls mock APIs to assess market value and find buyer.
+    Evaluate Node: Uses VLM to analyze clothing and query real market prices.
     """
     if state["status"] == "no_items_found" or state["status"] == "error":
         return state
@@ -111,60 +120,236 @@ def evaluate_node(state: WorkflowState) -> WorkflowState:
         return state
 
     try:
-        # Step 1: Check market price
-        add_log(state, f"💰 正在查询二手市场价格...")
-        market_price = check_market_price(item["name"])
-        state["market_price"] = market_price
-        add_log(state, f"   └─ 市场估价: ¥{market_price}")
+        # Step 1: VLM Analysis
+        add_log(state, "🔍 正在使用AI视觉分析衣物特征...")
+        image_path = item.get("image", "")
+        add_log(state, f"   📸 图片路径: {image_path}")
+        add_log(state, f"   📂 当前工作目录: {os.getcwd()}")
+        add_log(state, f"   🏷️  物品名称: {item.get('name', 'Unknown')}")
+        add_log(state, f"   🆔 物品ID: {item.get('item_id', 'Unknown')}")
 
-        # Step 2: Get buyer offer
-        add_log(state, f"🔎 正在闲鱼平台寻找买家...")
-        buyer_offer = get_buyer_offer(market_price)
-        state["buyer_offer"] = buyer_offer
-        add_log(state, f"   └─ 找到买家: {buyer_offer['buyer_name']}")
-        add_log(state, f"   └─ 出价: ¥{buyer_offer['offer_price']}")
+        # Verify image exists
+        if image_path:
+            if os.path.exists(image_path):
+                file_size = os.path.getsize(image_path)
+                add_log(state, f"   ✅ 图片文件存在 (大小: {file_size} bytes)")
+                # Check if it's a recently created file
+                mtime = os.path.getmtime(image_path)
+                age_seconds = time.time() - mtime
+                add_log(state, f"   ⏱️  文件修改时间: {age_seconds:.1f}秒前")
+            else:
+                add_log(state, f"   ❌ 图片文件不存在: {image_path}")
+                # Try to find the file in current directory
+                basename = os.path.basename(image_path)
+                if os.path.exists(basename):
+                    image_path = os.path.abspath(basename)
+                    add_log(state, f"   🔄 使用相对路径找到图片: {image_path}")
 
-        # Step 3: Check buyer credit
-        add_log(state, f"📋 正在核查买家信用...")
-        buyer_credit = check_buyer_credit(buyer_offer["buyer_id"])
-        state["buyer_credit"] = buyer_credit
-        add_log(state, f"   └─ 信用评级: {buyer_credit['credit_rating']}")
-        add_log(state, f"   └─ 信用分: {buyer_credit['credit_score']}")
-        add_log(state, f"   └─ 历史交易: {buyer_credit['successful_transactions']} 笔")
+        vlm_analysis = None
+        gemini_full_result = None
+        if image_path and os.path.exists(image_path):
+            add_log(state, "   🚀 调用 Gemini 3.1 Pro 分析...")
+            vlm_result = pricing_tool.analyze_clothing(image_path)
+            if vlm_result and vlm_result.get("success"):
+                gemini_full_result = vlm_result
+                vlm_analysis = vlm_result.get("item_details", {})
+                official_price = vlm_result.get("official_price", {})
+                resale = vlm_result.get("resale_estimate", {})
 
-        # Step 4: Generate recommendation
-        if buyer_credit["credit_rating"] == "Excellent":
-            recommendation = (
-                f"🌟 智能推荐: 发现买家「{buyer_offer['buyer_name']}」"
-                f"出价 ¥{buyer_offer['offer_price']} 购买您的「{item['name']}」。\n\n"
-                f"买家信用评级: {buyer_credit['credit_rating']} (信用分: {buyer_credit['credit_score']})\n"
-                f"历史成功交易: {buyer_credit['successful_transactions']} 笔\n"
-                f"退货率: {buyer_credit['return_rate']}\n\n"
-                f"✅ 强烈建议出售！"
-            )
-        elif buyer_credit["credit_rating"] == "Good":
-            recommendation = (
-                f"📌 智能推荐: 发现买家「{buyer_offer['buyer_name']}」"
-                f"出价 ¥{buyer_offer['offer_price']} 购买您的「{item['name']}」。\n\n"
-                f"买家信用评级: {buyer_credit['credit_rating']} (信用分: {buyer_credit['credit_score']})\n"
-                f"历史成功交易: {buyer_credit['successful_transactions']} 笔\n\n"
-                f"⚠️ 可以考虑出售"
-            )
+                add_log(state, f"   ├─ 品牌: {vlm_analysis.get('brand', 'Unknown')}")
+                add_log(state, f"   ├─ 型号: {vlm_analysis.get('model_name', 'N/A')}")
+                add_log(state, f"   ├─ 货号: {vlm_analysis.get('product_code', 'N/A')}")
+                add_log(state, f"   ├─ 类别: {vlm_analysis.get('category', 'Unknown')}")
+                add_log(state, f"   ├─ 材质: {vlm_analysis.get('material', 'Unknown')}")
+                add_log(state, f"   ├─ 成色: {vlm_analysis.get('condition', 'Unknown')}")
+                add_log(state, f"   ├─ 官方价: {official_price.get('amount', 'N/A')} {official_price.get('currency', '')}")
+                add_log(state, f"   ├─ 建议售价: ¥{resale.get('max_price', 'N/A')} (二手)")
+                add_log(state, f"   └─ 置信度: {vlm_analysis.get('confidence', 'N/A')}")
+
+                if vlm_result.get('description'):
+                    add_log(state, f"   📋 描述: {vlm_result['description'][:100]}...")
+                if vlm_result.get('model_used'):
+                    add_log(state, f"   🤖 模型: {vlm_result['model_used']}")
+            else:
+                add_log(state, "   ⚠️ Gemini 分析失败，尝试 Google Lens...")
         else:
-            recommendation = (
-                f"⚠️ 风险提示: 发现买家「{buyer_offer['buyer_name']}」"
-                f"出价 ¥{buyer_offer['offer_price']} 购买您的「{item['name']}」。\n\n"
-                f"买家信用评级: {buyer_credit['credit_rating']} (信用分: {buyer_credit['credit_score']})\n"
-                f"❌ 不建议出售，建议等待其他买家"
-            )
+            add_log(state, "   ℹ️ 未找到图片或API未配置，使用基础信息")
+
+        # Store VLM analysis in state
+        state["vlm_analysis"] = vlm_analysis or {}
+        # Store full Gemini result for Agent to use
+        state["gemini_result"] = gemini_full_result or {}
+        # Also store detailed description if available
+        state["detailed_description"] = gemini_full_result.get("description", "") if gemini_full_result else ""
+
+        # Step 2: Google/SerpAPI Image Search for brand and price
+        add_log(state, "🔍 正在通过 Google Lens 查找同款...")
+        add_log(state, "   ├─ 连接 SerpAPI...")
+        search_result = {"success": False, "brand": None, "price": None, "title": None}
+        try:
+            from tools.bing_visual_search import search_clothing_on_google
+            add_log(state, "   ├─ 上传图片进行视觉匹配...")
+            search_result = search_clothing_on_google(image_path)
+            if search_result.get("success"):
+                add_log(state, "   ├─ ✓ 搜索完成，分析结果...")
+                add_log(state, f"   ├─ 识别品牌: {search_result.get('brand', '未识别')}")
+                add_log(state, f"   ├─ 参考价格: {search_result.get('price', '未找到')}")
+                add_log(state, f"   └─ 商品信息: {search_result.get('title', 'N/A')[:40]}...")
+            else:
+                add_log(state, f"   ⚠️ 搜索失败: {search_result.get('error', '未知错误')}")
+                add_log(state, "   回退到 Bing 视觉搜索...")
+        except Exception as e:
+            add_log(state, f"   ⚠️ 搜索异常: {e}")
+
+        # Store search result in state
+        state["bing_search_result"] = search_result
+
+        # Update item name with VLM analysis results
+        if vlm_analysis:
+            brand = vlm_analysis.get('brand', '')
+            category = vlm_analysis.get('category', '')
+            color = vlm_analysis.get('color', '')
+
+            # Build display name from available info
+            parts = []
+            if brand and brand != 'Unknown':
+                parts.append(brand)
+            if color and color != 'Unknown':
+                parts.append(color)
+            if category and category != 'Unknown':
+                parts.append(category)
+
+            if parts:
+                new_name = ' '.join(parts)
+            elif color:
+                new_name = f"{color}衣物"
+            else:
+                new_name = item['name']  # Fallback to original name
+
+            add_log(state, f"   📝 识别为: {new_name}")
+            # Update the item name in state for display
+            state["current_item"]["display_name"] = new_name
+
+            # Also update in database with detailed analysis
+            try:
+                from database_manager import load_database, save_database
+                data = load_database()
+                for db_item in data["wardrobe"]:
+                    if db_item["item_id"] == item["item_id"]:
+                        db_item["vlm_brand"] = brand
+                        db_item["vlm_category"] = category
+                        db_item["vlm_material"] = vlm_analysis.get('material', '')
+                        db_item["vlm_condition"] = vlm_analysis.get('condition', '')
+                        db_item["vlm_product_code"] = vlm_analysis.get('product_code', '')
+                        db_item["vlm_model_name"] = vlm_analysis.get('model_name', '')
+                        db_item["vlm_official_price"] = gemini_full_result.get('official_price', {})
+                        db_item["vlm_resale_estimate"] = gemini_full_result.get('resale_estimate', {})
+                        db_item["vlm_description"] = gemini_full_result.get('description', '')
+                        db_item["analysis_source"] = gemini_full_result.get('analysis_source', 'gemini')
+                        save_database(data)
+                        add_log(state, f"   💾 已保存详细分析结果到数据库")
+                        break
+            except Exception as e:
+                add_log(state, f"   ⚠️ 保存分析结果失败: {e}")
+
+        # Step 2: Get price from Gemini analysis
+        add_log(state, f"💰 价格分析...")
+
+        market_price = 0
+        price_data = None
+        if gemini_full_result:
+            resale = gemini_full_result.get("resale_estimate", {})
+            if resale:
+                market_price = resale.get("max_price", 0)
+                price_data = {
+                    "suggested_price": market_price,
+                    "price_range": f"¥{resale.get('min_price', 0)} - ¥{resale.get('max_price', 0)}",
+                    "confidence": resale.get("confidence", "中"),
+                    "source": "gemini"
+                }
+                add_log(state, f"   ├─ 二手估价: ¥{resale.get('min_price', 0)} - ¥{resale.get('max_price', 0)}")
+                add_log(state, f"   ├─ 建议售价: ¥{market_price}")
+                add_log(state, f"   └─ 置信度: {resale.get('confidence', 'N/A')}")
+            else:
+                # Fallback to brand-based estimation
+                brand = vlm_analysis.get("brand", "") if vlm_analysis else ""
+                if brand and brand != "Unknown":
+                    price_data = pricing_tool.query_market_price(brand, vlm_analysis.get("category", ""))
+                    market_price = price_data.get("estimated_price", 500)
+                    add_log(state, f"   └─ 基于品牌估算: ¥{market_price}")
+        else:
+            # Fallback to mock pricing
+            market_price = check_market_price(item["name"])
+            add_log(state, f"   └─ 使用默认定价: ¥{market_price}")
+
+        state["market_price"] = market_price
+        state["pricing_data"] = price_data or {"suggested_price": market_price, "sample_size": 0}
+
+        # Step 3: Build simplified recommendation with real data only
+        add_log(state, f"📝 生成分析报告...")
+
+        item_name = item['name']
+        if vlm_analysis:
+            category = vlm_analysis.get('category', '')
+            brand = vlm_analysis.get('brand', '')
+            if category and category != 'Unknown':
+                item_name = f"{brand} {category}" if brand and brand != 'Unknown' else category
+
+        # 获取 Gemini 完整结果
+        gemini_result = state.get("gemini_result", {})
+        official_price = gemini_result.get("official_price", {}) if gemini_result else {}
+
+        # 构建简洁的推荐
+        recommendation_parts = []
+
+        # 显示品牌和型号
+        if brand and brand != 'Unknown':
+            model_name = vlm_analysis.get('model_name', '')
+            if model_name and model_name != '未识别':
+                recommendation_parts.append(f"🎯 **{brand} {model_name}**")
+            else:
+                recommendation_parts.append(f"🎯 **{brand}**")
+
+        # 货号
+        product_code = vlm_analysis.get('product_code', '')
+        if product_code and product_code != 'N/A':
+            recommendation_parts.append(f"📦 货号: {product_code}")
+
+        if vlm_analysis:
+            features = []
+            if vlm_analysis.get('category'):
+                features.append(f"类别: {vlm_analysis['category']}")
+            if vlm_analysis.get('material'):
+                features.append(f"材质: {vlm_analysis['material']}")
+            if vlm_analysis.get('condition'):
+                features.append(f"成色: {vlm_analysis['condition']}")
+
+            if features:
+                recommendation_parts.append(f"\n👕 衣物特征")
+                recommendation_parts.extend([f"• {f}" for f in features])
+
+        # 价格信息
+        recommendation_parts.append(f"\n💰 价格参考")
+        if official_price.get('amount'):
+            recommendation_parts.append(f"• 官方指导价: {official_price['amount']} {official_price.get('currency', '')}")
+        recommendation_parts.append(f"• 二手建议售价: ¥{market_price}")
+
+        # 来源说明
+        if gemini_result.get('analysis_source') == 'gemini':
+            recommendation_parts.append(f"\n🤖 由 Gemini 3.1 Pro 智能分析")
+
+        recommendation_parts.append("\n✅ 建议出售，为衣橱腾出空间！")
+
+        recommendation = "\n".join(recommendation_parts)
 
         state["agent_decision"] = recommendation
         state["status"] = "awaiting_user_decision"
         add_log(state, "⏳ 等待用户在App上确认...")
 
     except Exception as e:
-        add_log(state, f"❌ 评估失败: {str(e)}")
-        state["status"] = "error"
+        add_log(state, f"❌ 评估过程出错: {str(e)}")
+        state["status"] = "api_overloaded"
+        state["error_message"] = str(e)
 
     return state
 
@@ -371,19 +556,39 @@ def run_workflow_until_user_input():
     return state
 
 
-def resume_workflow(user_approved: bool):
+def resume_workflow(user_approved: bool, initial_state: WorkflowState = None):
     """
     Resume the workflow with user decision.
+
+    Args:
+        user_approved: User's decision (True=approve, False=reject)
+        initial_state: Optional initial state to use (for upload workflow)
     """
-    # Get the current state
-    state = workflow_app.get_state({"configurable": {"thread_id": "fashionclaw_demo"}})
+    # Get or create state
+    if initial_state is not None:
+        # Use provided state (from upload workflow)
+        updated_state = dict(initial_state)
+        updated_state["user_approved"] = user_approved
+        # Set status for execute_node to work correctly
+        updated_state["status"] = "user_approved" if user_approved else "user_rejected"
 
-    if not state:
-        return None
-
-    # Update with user decision
-    updated_state = dict(state.values)
-    updated_state["user_approved"] = user_approved
+        # Save to checkpoint for consistency
+        try:
+            workflow_app.update_state(
+                {"configurable": {"thread_id": "fashionclaw_demo"}},
+                updated_state
+            )
+        except Exception as e:
+            print(f"[resume_workflow] Warning: failed to save state: {e}")
+    else:
+        # Get from checkpoint (standard workflow)
+        state = workflow_app.get_state({"configurable": {"thread_id": "fashionclaw_demo"}})
+        if not state:
+            return None
+        updated_state = dict(state.values)
+        updated_state["user_approved"] = user_approved
+        # Set status for execute_node to work correctly
+        updated_state["status"] = "user_approved" if user_approved else "user_rejected"
 
     # Resume execution
     final_state = None
@@ -428,7 +633,7 @@ def run_upload_workflow_until_user_input(item: dict) -> WorkflowState:
     Returns state at the user decision point.
     """
     state = run_upload_workflow(item)
-    
+
     # Save state to workflow_app for resume_workflow to work
     # Update the state in the checkpoint
     try:
@@ -438,5 +643,68 @@ def run_upload_workflow_until_user_input(item: dict) -> WorkflowState:
         )
     except Exception as e:
         print(f"Warning: failed to save workflow state: {e}")
-    
+
+    return state
+
+
+# ========== Pricing Agent Integration (Deprecated) ==========
+# Note: pricing_agent.py has been removed. Use Bing visual search instead.
+
+def pricing_request_node(state: WorkflowState) -> WorkflowState:
+    """
+    Pricing Request Node: Triggered when user wants to check pricing.
+    Now uses Bing visual search instead of Xianyu.
+    """
+    item = state.get("current_item")
+    if not item:
+        add_log(state, "❌ 错误: 没有物品可定价")
+        state["status"] = "error"
+        return state
+
+    add_log(state, f"💰 开始定价分析: {item['name']}")
+    add_log(state, "🤖 调用定价 Agent 分析衣物特征...")
+
+    state["status"] = "awaiting_pricing_decision"
+    return state
+
+
+def pricing_execute_node(state: WorkflowState) -> WorkflowState:
+    """
+    Pricing Execute Node: Actually run the pricing analysis.
+    """
+    item = state.get("current_item")
+    if not item:
+        add_log(state, "❌ 错误: 没有物品可定价")
+        state["status"] = "error"
+        return state
+
+    try:
+        image_path = item.get("image", "")
+        if not image_path or not os.path.exists(image_path):
+            add_log(state, "⚠️ 未找到衣物图片，使用模拟定价")
+            # Fallback to mock pricing
+            state["pricing_result"] = {
+                "item_details": {"category": item.get("name", "Unknown"), "brand": "Unknown"},
+                "pricing": {"suggested_price": 199, "sample_size": 10},
+                "listing_title": f"{item.get('name', '闲置衣物')} 转卖",
+                "listing_desc": "九成新，原价购入，现低价转让"
+            }
+        else:
+            # Call pricing agent
+            add_log(state, "📸 分析衣物图片...")
+            result = pricing_agent.analyze_and_price(image_path)
+            state["pricing_result"] = result
+
+            pricing = result.get("pricing", {})
+            add_log(state, f"✅ 定价分析完成！")
+            add_log(state, f"   ├─ 建议售价: ¥{pricing.get('suggested_price', 0)}")
+            add_log(state, f"   ├─ 样本数量: {pricing.get('sample_size', 0)} 件")
+            add_log(state, f"   └─ 价格区间: {pricing.get('price_range', 'N/A')}")
+
+        state["status"] = "pricing_completed"
+
+    except Exception as e:
+        add_log(state, f"❌ 定价分析失败: {str(e)}")
+        state["status"] = "error"
+
     return state

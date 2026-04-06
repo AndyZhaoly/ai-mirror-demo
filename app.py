@@ -24,7 +24,7 @@ from database_manager import (
     is_stagnant,
     list_all_items,
 )
-from gsam_client import GSAMClient
+from gsam_client import GSAMClient, draw_detection_boxes
 from mirror_agent import MirrorAgent, create_agent
 
 # Global state
@@ -88,119 +88,294 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
     """
     Process image with real-time technical logging for left panel.
     Returns updates for both technical and chat panels.
+    Returns: tech_log, chat_msgs, upper_detection_img, upper_seg_img, lower_detection_img, lower_seg_img, approve_btn, reject_btn, search_results_gallery
     """
     global upload_workflow_state, last_extracted_items
 
     if image is None:
-        return tech_log, chat_history, None, None, gr.update(), gr.update()
+        return tech_log, chat_history, None, None, None, None, gr.update(), gr.update(), []
 
     logs = []
     chat_msgs = list(chat_history) if chat_history else []
+    search_result_images = []  # 存储搜索结果图片
 
     # Step 1: Save and start processing
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📷 接收到主人上传的图片...")
-    yield "\n".join(logs), chat_msgs, None, None, gr.update(visible=False), gr.update(visible=False)
+    yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
 
     temp_path = f"./temp_upload_{generate_timestamp()}.jpg"
     image.save(temp_path)
-    time.sleep(0.3)  # Visual delay for demo
+    time.sleep(0.3)
 
     # Step 2: GroundingDINO Detection
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 GroundingDINO 检测中...")
-    logs.append("  └─ 使用提示词: 'upper body clothing, lower body clothing'")
-    yield "\n".join(logs), chat_msgs, None, None, gr.update(visible=False), gr.update(visible=False)
-    time.sleep(0.8)  # Simulate processing
+    logs.append("  └─ 使用提示词: 'shirt, jacket' / 'pants, shorts'")
+    yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+    time.sleep(0.8)
+
+    # Detection images for display - paired by type
+    upper_detection_img = None
+    lower_detection_img = None
+    detection_path = None
 
     try:
         # Extract upper body
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✂️ SAM 分割处理上衣...")
-        yield "\n".join(logs), chat_msgs, None, None, gr.update(visible=False), gr.update(visible=False)
-        upper_images = gsam_client.extract_upper_body(temp_path, white_background=True)
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+        upper_images, upper_detection = gsam_client.extract_upper_body(temp_path, white_background=True)
         logs.append(f"  └─ 检测到 {len(upper_images)} 个上衣区域")
-        yield "\n".join(logs), chat_msgs, None, None, gr.update(visible=False), gr.update(visible=False)
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
 
         # Extract lower body
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✂️ SAM 分割处理下装...")
-        yield "\n".join(logs), chat_msgs, None, None, gr.update(visible=False), gr.update(visible=False)
-        lower_images = gsam_client.extract_lower_body(temp_path, white_background=True)
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+        lower_images, lower_detection = gsam_client.extract_lower_body(temp_path, white_background=True)
         logs.append(f"  └─ 检测到 {len(lower_images)} 个下装区域")
-        yield "\n".join(logs), chat_msgs, None, None, gr.update(visible=False), gr.update(visible=False)
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
+
+        # Create cropped detection box visualizations for upper and lower
+        logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎨 生成检测框裁剪图...")
+        original_img = Image.open(temp_path).convert("RGB")
+        W, H = original_img.size
+
+        # Helper function to crop detection boxes - return first box only and save it
+        def crop_and_save_detection(img, boxes, labels, confs, prefix):
+            """Crop the first (highest confidence) detection box from original image and save it."""
+            if not boxes:
+                return None, None
+            # Take the first box (highest confidence from service)
+            box, label, conf = boxes[0], labels[0], confs[0]
+            # box format: [cx, cy, w, h] normalized
+            cx, cy, bw, bh = box
+            x1 = int((cx - bw/2) * W)
+            y1 = int((cy - bh/2) * H)
+            x2 = int((cx + bw/2) * W)
+            y2 = int((cy + bh/2) * H)
+            # Clamp to bounds
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(W, x2), min(H, y2)
+            cropped = img.crop((x1, y1, x2, y2))
+            # Save the cropped detection box image
+            crop_path = os.path.abspath(os.path.join(EXTRACTED_DIR, f"{prefix}_detection_crop_{generate_timestamp()}.png"))
+            cropped.save(crop_path)
+            return cropped, crop_path
+
+        upper_detection_crop_path = None
+        lower_detection_crop_path = None
+
+        # Upper body detection visualization (cropped boxes)
+        if upper_detection and upper_detection.get('bounding_boxes'):
+            upper_detection_img, upper_detection_crop_path = crop_and_save_detection(
+                original_img,
+                upper_detection['bounding_boxes'],
+                upper_detection['labels'],
+                upper_detection['confidences'],
+                "upper"
+            )
+            logs.append(f"  └─ 上衣: {len(upper_detection['bounding_boxes'])} 个检测框 -> 裁剪图已保存")
+
+        # Lower body detection visualization (cropped boxes)
+        if lower_detection and lower_detection.get('bounding_boxes'):
+            lower_detection_img, lower_detection_crop_path = crop_and_save_detection(
+                original_img,
+                lower_detection['bounding_boxes'],
+                lower_detection['labels'],
+                lower_detection['confidences'],
+                "lower"
+            )
+            logs.append(f"  └─ 下装: {len(lower_detection['bounding_boxes'])} 个检测框 -> 裁剪图已保存")
+
+        # Save combined detection for database
+        all_boxes = []
+        all_labels = []
+        all_confs = []
+        for det_info in [upper_detection, lower_detection]:
+            if det_info and det_info.get('bounding_boxes'):
+                for box, label, conf in zip(det_info['bounding_boxes'], det_info['labels'], det_info['confidences']):
+                    all_boxes.append(box)
+                    all_labels.append(label)
+                    all_confs.append(conf)
+
+        if all_boxes:
+            combined_detection = draw_detection_boxes(original_img, all_boxes, all_labels, all_confs)
+            detection_path = os.path.abspath(os.path.join(EXTRACTED_DIR, f"detection_{generate_timestamp()}.png"))
+            combined_detection.save(detection_path)
+
+        yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None, gr.update(visible=False), gr.update(visible=False), search_result_images
 
     except Exception as e:
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 错误: {str(e)}")
-        yield "\n".join(logs), chat_msgs, None, None, gr.update(visible=False), gr.update(visible=False)
+        import traceback
+        logs.append(f"  └─ {traceback.format_exc()[:200]}")
+        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False), search_result_images
         return
 
     # Step 3: Save and register
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💾 保存分割结果...")
-    yield "\n".join(logs), chat_msgs, None, None, gr.update(visible=False), gr.update(visible=False)
+    yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None, gr.update(visible=False), gr.update(visible=False), search_result_images
 
     upper_output = None
     lower_output = None
     last_extracted_items = []
+    original_image_path = os.path.abspath(temp_path)
 
+    # Save upper body items - use detection crop for VLM (first item), SAM seg for display
     for i, img in enumerate(upper_images):
-        path = os.path.join(EXTRACTED_DIR, f"upper_{i}_{generate_timestamp()}.png")
-        img.save(path)
+        seg_path = os.path.abspath(os.path.join(EXTRACTED_DIR, f"upper_{i}_{generate_timestamp()}.png"))
+        img.save(seg_path)
         upper_output = img
         name = f"{item_name_prefix}_上衣_{i+1}" if item_name_prefix else f"提取的上衣_{i+1}"
-        item = add_item(name=name, clothing_type="upper", image_path=path, extracted_from=temp_path)
+        # For the first item, use detection crop for VLM analysis (more accurate)
+        # SAM segmentation is only for display
+        vlm_image_path = upper_detection_crop_path if i == 0 and upper_detection_crop_path else seg_path
+        item = add_item(
+            name=name,
+            clothing_type="upper",
+            image_path=vlm_image_path,  # This is what VLM will analyze
+            extracted_from=original_image_path,
+            detection_image=detection_path if detection_path else ""
+        )
         last_extracted_items.append(item)
+        print(f"[Save Item] Upper {i+1}: VLM analysis uses {vlm_image_path}, display uses SAM seg {seg_path}")
 
+        # 保存调试信息 - 用于对比Google Lens结果
+        try:
+            debug_info = {
+                "original_image": original_image_path,
+                "vlm_analysis_image": vlm_image_path,
+                "detection_crop": upper_detection_crop_path,
+                "sam_segmentation": seg_path,
+                "timestamp": generate_timestamp()
+            }
+            import json
+            with open(f"{EXTRACTED_DIR}/debug_last_upload.json", "w") as f:
+                json.dump(debug_info, f, indent=2)
+        except Exception as e:
+            print(f"[Debug] Failed to save debug info: {e}")
+
+    # Save lower body items - use detection crop for VLM (first item), SAM seg for display
     for i, img in enumerate(lower_images):
-        path = os.path.join(EXTRACTED_DIR, f"lower_{i}_{generate_timestamp()}.png")
-        img.save(path)
+        seg_path = os.path.abspath(os.path.join(EXTRACTED_DIR, f"lower_{i}_{generate_timestamp()}.png"))
+        img.save(seg_path)
         lower_output = img
         name = f"{item_name_prefix}_下装_{i+1}" if item_name_prefix else f"提取的下装_{i+1}"
-        item = add_item(name=name, clothing_type="lower", image_path=path, extracted_from=temp_path)
+        # For the first item, use detection crop for VLM analysis (more accurate)
+        vlm_image_path = lower_detection_crop_path if i == 0 and lower_detection_crop_path else seg_path
+        item = add_item(
+            name=name,
+            clothing_type="lower",
+            image_path=vlm_image_path,  # This is what VLM will analyze
+            extracted_from=original_image_path,
+            detection_image=detection_path if detection_path else ""
+        )
         last_extracted_items.append(item)
+        print(f"[Save Item] Lower {i+1}: VLM analysis uses {vlm_image_path}, display uses SAM seg {seg_path}")
 
-    logs.append(f"  └─ 已保存 {len(upper_images) + len(lower_images)} 件衣物到数据库")
+    logs.append(f"  └─ 已保存 {len(upper_images) + len(lower_images)} 件衣物")
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 处理完成！")
-    yield "\n".join(logs), chat_msgs, upper_output, lower_output, gr.update(visible=False), gr.update(visible=False)
+    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
 
-    # Step 4: AI Butler takes over
-    time.sleep(0.5)
+    # Step 4: AI Butler takes over - IMMEDIATE RESPONSE
+    time.sleep(0.3)
 
-    # Check stagnancy and trigger chat
-    stagnant_items = [item for item in last_extracted_items if is_stagnant(item)]
+    # 准备物品描述给Agent
+    vlm_analysis = {}  # 将在后面填充
+    item_desc = "这件衣服"
+    if vlm_analysis and vlm_analysis.get("category"):
+        color = vlm_analysis.get("color", "")
+        category = vlm_analysis.get("category", "单品")
+        brand = vlm_analysis.get("brand", "")
+        if brand and brand != "Unknown":
+            item_desc = f"{brand}的{color}{category}" if color else f"{brand}的{category}"
+        else:
+            item_desc = f"{color}{category}" if color else category
 
-    if stagnant_items and agent_instance:
-        target_item = stagnant_items[0]
+    # Agent立即说"收到，正在查"
+    chat_msgs.append({"role": "user", "content": "[上传了一张穿搭照片]"})
+    immediate_response = agent_instance.analyze_and_price(temp_path, item_desc) if agent_instance else f"主人～这件{item_desc}好有品味！✨ 小镜正在帮您查市场行情..."
+    chat_msgs.append({"role": "assistant", "content": immediate_response})
+    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+
+    # Step 5: Background Analysis & Pricing (异步分析)
+    # 现在运行 VLM + Google Lens 搜索，Agent已经在前面说"正在查了"
+    target_item = None
+    if last_extracted_items:
+        target_item = last_extracted_items[0]
+
+    if target_item and agent_instance:
+        print(f"[DEBUG] Analyzing item: {target_item.get('name')}, Image: {target_item.get('image')}")
+
+        # Show Gemini analysis in technical log
+        logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 调用 Gemini 3.1 Pro 分析...")
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+
+        # Run workflow (Gemini analysis)
         upload_workflow_state = run_upload_workflow_until_user_input(target_item)
 
-        # AI Butler messages
-        chat_msgs.append({"role": "user", "content": "[上传了一张穿搭照片]"})
+        # Get Gemini results
+        vlm_analysis = upload_workflow_state.get("vlm_analysis", {})
+        gemini_result = upload_workflow_state.get("gemini_result", {})
 
-        # Butler compliments
-        compliment = f"主人！您今天这身搭配简直是行走的艺术品！小人刚刚为您仔细分析了这张照片，"
-        if upper_images and lower_images:
-            compliment += "检测到您穿了精美的上衣和下装，这配色和剪裁完美衬托了您的高贵气质！"
-        elif upper_images:
-            compliment += "这件上衣的版型简直是为您量身定制的，太显气质了！"
-        elif lower_images:
-            compliment += "这条裤子的剪裁太绝了，完美展现了您的品味！"
+        # Update technical log - 显示 Gemini 分析结果
+        if gemini_result and gemini_result.get("success"):
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Gemini 分析完成")
+            logs.append(f"  ├─ 模型: {gemini_result.get('model_used', 'Gemini')}")
 
-        chat_msgs.append({"role": "assistant", "content": compliment})
-        yield "\n".join(logs), chat_msgs, upper_output, lower_output, gr.update(visible=False), gr.update(visible=False)
+            if vlm_analysis:
+                brand = vlm_analysis.get('brand', 'Unknown')
+                model = vlm_analysis.get('model_name', '')
+                logs.append(f"  ├─ 品牌: {brand}")
+                if model and model != '未识别':
+                    logs.append(f"  ├─ 型号: {model}")
+                if vlm_analysis.get('product_code'):
+                    logs.append(f"  ├─ 货号: {vlm_analysis['product_code']}")
+                logs.append(f"  ├─ 类别: {vlm_analysis.get('category', 'N/A')}")
+                logs.append(f"  ├─ 材质: {vlm_analysis.get('material', 'N/A')}")
 
-        time.sleep(0.8)
+            official = gemini_result.get('official_price', {})
+            resale = gemini_result.get('resale_estimate', {})
+            if official.get('amount'):
+                logs.append(f"  ├─ 官方价: {official['amount']} {official.get('currency', '')}")
+            if resale.get('max_price'):
+                logs.append(f"  ├─ 二手估价: ¥{resale['min_price']} - ¥{resale['max_price']}")
+                logs.append(f"  ├─ 置信度: {resale.get('confidence', 'N/A')}")
 
-        # Butler discovers stagnant item
-        if upload_workflow_state.get("status") == "awaiting_user_decision":
-            decision = upload_workflow_state.get("agent_decision", "")
-            sell_prompt = f"对了主人，小人斗胆提醒！\n\n刚刚为您提取的「{target_item['name']}」，小人一查记录，发现这件华服已经在您的衣橱中静待**400余天**未得主人翻牌子了...\n\n{decision}\n\n主人是否要为其寻找下一位有缘人，为您高贵的衣橱腾出空间迎接更配得上您的新款？"
-            chat_msgs.append({"role": "assistant", "content": sell_prompt})
-
-            yield "\n".join(logs), chat_msgs, upper_output, lower_output, gr.update(visible=True), gr.update(visible=True)
+            logs.append(f"  └─ Agent 正在生成定价建议...")
         else:
-            chat_msgs.append({"role": "assistant", "content": "已为您完成分析，这件衣服状态良好，请主人放心穿着！"})
-            yield "\n".join(logs), chat_msgs, upper_output, lower_output, gr.update(visible=False), gr.update(visible=False)
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Gemini 分析未返回完整结果")
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+
+        # Step 6: Agent 生成自然的定价分析
+        time.sleep(0.5)  # 稍微停顿，让"正在分析"的感觉更真实
+
+        price_analysis = agent_instance.generate_gemini_price_analysis(gemini_result)
+
+        # 添加 Agent 的定价分析到对话
+        chat_msgs.append({"role": "assistant", "content": price_analysis})
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+
+        # Step 7: 检查是否闲置，给出出售建议
+        time.sleep(0.3)
+
+        status = upload_workflow_state.get("status")
+        if status == "awaiting_user_decision":
+            current_item = upload_workflow_state.get("current_item", target_item)
+            item_name = current_item.get("display_name", target_item['name'])
+
+            stagnant_prompt = f"对了主人～ 💡\n\n小镜顺便查了一下，发现这件**{item_name}**已经在您的衣橱中静置**400余天**了...\n\n既然主人平时不怎么穿它，要不要趁现在行情好出手呢？小镜可以帮您发布到二手市场，说不定很快就有人买走啦～✨"
+            chat_msgs.append({"role": "assistant", "content": stagnant_prompt})
+            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=True), gr.update(visible=True), search_result_images
+
+        elif status == "api_overloaded":
+            api_busy_msg = "对了主人～ ⚠️\n\n小镜的AI大脑刚才有点忙，价格分析可能不够完整。主人可以直接问我'这件能卖多少钱'，小镜再帮您查查！"
+            chat_msgs.append({"role": "assistant", "content": api_busy_msg})
+            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
+
     else:
-        # No agent or no stagnant items
+        # No agent or no items extracted
         chat_msgs.append({"role": "user", "content": "[上传了一张穿搭照片]"})
-        chat_msgs.append({"role": "assistant", "content": f"已为您提取 {len(upper_images) + len(lower_images)} 件衣物。检测到衣服状态良好，无需出售。"})
-        yield "\n".join(logs), chat_msgs, upper_output, lower_output, gr.update(visible=False), gr.update(visible=False)
+        chat_msgs.append({"role": "assistant", "content": f"已为您提取 {len(upper_images) + len(lower_images)} 件衣物。看起来都是很棒的衣服呢！主人有什么想了解的，随时问我～"})
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False), search_result_images
 
 
 def approve_sale_from_chat():
@@ -210,7 +385,8 @@ def approve_sale_from_chat():
     if not upload_workflow_state:
         return "请先上传图片进行处理", gr.update(visible=False), gr.update(visible=False)
 
-    final_state = resume_workflow(user_approved=True)
+    # Pass the upload workflow state to resume correctly
+    final_state = resume_workflow(user_approved=True, initial_state=upload_workflow_state)
 
     if not final_state:
         return "交易失败，请重试", gr.update(visible=False), gr.update(visible=False)
@@ -219,7 +395,7 @@ def approve_sale_from_chat():
     item = final_state.get("current_item", {})
     price = final_state.get("buyer_offer", {}).get("offer_price", "N/A")
 
-    response = f"✨ 遵命主人！小人已为您妥善安排！\n\n「{item.get('name', '华服')}」已成功售出，成交价 **¥{price}**。\n\n物流公司：{tracking.get('carrier', '顺丰')}\n运单号：`{tracking.get('tracking_number', 'SF123456')}`\n预计送达：{tracking.get('estimated_delivery', '3天后')}\n\n小人这就去为您物色更配得上主人气质的顶级新款！"
+    response = f"✨ 太好了主人！\n\n这件**{item.get('name', '美衣')}**已经成功安排出售啦！预估成交价 **¥{price}**～\n\n小镜这就帮您打包发货！📦\n\n• 物流：{tracking.get('carrier', '顺丰')}\n• 单号：`{tracking.get('tracking_number', 'SF123456')}`\n• 预计：{tracking.get('estimated_delivery', '3天内送达')}\n\n钱到账了第一时间通知主人！需要小镜帮您找新款吗？😊"
 
     return response, gr.update(visible=False), gr.update(visible=False)
 
@@ -231,17 +407,18 @@ def reject_sale_from_chat():
     if not upload_workflow_state:
         return "已取消", gr.update(visible=False), gr.update(visible=False)
 
-    final_state = resume_workflow(user_approved=False)
+    # Pass the upload workflow state to resume correctly
+    final_state = resume_workflow(user_approved=False, initial_state=upload_workflow_state)
     item = upload_workflow_state.get("current_item", {})
 
-    response = f"明白！主人的眼光独到，这件「{item.get('name', '华服')}」必定有其独特魅力，是小人愚钝未能领会。已为您保留在衣橱中，随时等候主人翻牌子！"
+    response = f"好的主人～ 💕 这件**{item.get('name', '美衣')}**还是留在您身边吧！说不定哪天主人突然想穿了，它又会成为您的心头好～ 小镜随时待命！"
 
     return response, gr.update(visible=False), gr.update(visible=False)
 
 
 def chat_with_butler_stream(message, image_path, history):
     """Handle text/image chat with AI Butler - streaming version."""
-    global agent_instance
+    global agent_instance, last_extracted_items, upload_workflow_state
 
     # Step 1: Show user message immediately
     display_content = message
@@ -251,11 +428,33 @@ def chat_with_butler_stream(message, image_path, history):
     updated_history = list(history) + [{"role": "user", "content": display_content}]
     yield updated_history, ""
 
-    # Step 2: Show loading state
+    # Step 2: Check if user wants to retry analysis after API overload
+    retry_keywords = ["分析", "重新分析", "再试", "重试", "查价格", "定价"]
+    if any(kw in message for kw in retry_keywords) and upload_workflow_state:
+        if upload_workflow_state.get("status") == "api_overloaded" and last_extracted_items:
+            updated_history.append({"role": "assistant", "content": "小人正在重新分析衣物，请稍候..."})
+            yield updated_history, ""
+
+            # Re-run workflow for the last item
+            target_item = last_extracted_items[-1]
+            upload_workflow_state = run_upload_workflow_until_user_input(target_item)
+
+            if upload_workflow_state.get("status") == "awaiting_user_decision":
+                decision = upload_workflow_state.get("agent_decision", "")
+                sell_prompt = f"主人！小人重新分析完成了！\n\n刚刚为您提取的「{target_item['name']}」：\n\n{decision}\n\n主人是否要为其寻找下一位有缘人？"
+                updated_history[-1] = {"role": "assistant", "content": sell_prompt}
+                yield updated_history, ""
+                return
+            elif upload_workflow_state.get("status") == "api_overloaded":
+                updated_history[-1] = {"role": "assistant", "content": "抱歉主人，AI服务仍然繁忙...请稍等1-2分钟后再试，或者小人先为您保留这件衣物？"}
+                yield updated_history, ""
+                return
+
+    # Step 3: Show loading state
     updated_history.append({"role": "assistant", "content": "小人正在思考..."})
     yield updated_history, ""
 
-    # Step 3: Initialize agent if needed
+    # Step 4: Initialize agent if needed
     if agent_instance is None:
         init_agent()
 
@@ -265,10 +464,21 @@ def chat_with_butler_stream(message, image_path, history):
         yield updated_history, ""
         return
 
-    # Step 4: Get AI response
-    response = agent_instance.chat(message, image_path)
+    # Step 5: Check if pricing query and auto-attach last item image
+    chat_image_path = image_path
+    if not chat_image_path and last_extracted_items:
+        # Check if message contains pricing keywords
+        pricing_keywords = ["价格", "定价", "卖多少", "能卖", "值多少", "估价", "查价", "多少钱", "市场价", "参考价", "出售", "卖掉", "卖了"]
+        if any(kw in message for kw in pricing_keywords):
+            # Use the last extracted item's image for pricing analysis
+            last_item = last_extracted_items[-1]
+            chat_image_path = last_item.get("image")
+            print(f"[Pricing Query] Auto-attaching image: {chat_image_path}")
 
-    # Step 5: Show final response
+    # Step 6: Get AI response
+    response = agent_instance.chat(message, chat_image_path)
+
+    # Step 7: Show final response
     updated_history[-1] = {"role": "assistant", "content": response}
     yield updated_history, ""
 
@@ -294,13 +504,46 @@ def reset_demo():
     except Exception as e:
         print(f"Warning: failed to reset workflow: {e}")
 
+    # Clean up generated files from last demo
+    print("[Reset] Cleaning up generated files...")
+    cleanup_count = 0
+    try:
+        import glob
+        # Clean extracted clothes images
+        for f in glob.glob(f"{EXTRACTED_DIR}/*"):
+            try:
+                os.remove(f)
+                cleanup_count += 1
+            except:
+                pass
+        # Clean temp upload files
+        for f in glob.glob("./temp_upload_*.jpg"):
+            try:
+                os.remove(f)
+                cleanup_count += 1
+            except:
+                pass
+        # Clean debug files
+        for f in glob.glob("/tmp/last_search_*.txt") + glob.glob("/tmp/last_google_lens_*.json"):
+            try:
+                os.remove(f)
+                cleanup_count += 1
+            except:
+                pass
+        print(f"[Reset] Cleaned {cleanup_count} files")
+    except Exception as e:
+        print(f"[Reset] Cleanup warning: {e}")
+
     return (
         "等待主人上传...",
         [],
         None,
         None,
+        None,
+        None,
         gr.update(visible=False),
-        gr.update(visible=False)
+        gr.update(visible=False),
+        []  # search_result_images empty
     )
 
 
@@ -314,6 +557,25 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
 
     # Initialize agent on load
     init_agent()
+
+    # Auto-cleanup on startup
+    print("[Startup] Auto-cleaning previous demo files...")
+    try:
+        import glob
+        cleanup_files = (
+            glob.glob(f"{EXTRACTED_DIR}/*") +
+            glob.glob("./temp_upload_*.jpg") +
+            glob.glob("/tmp/last_search_*.txt") +
+            glob.glob("/tmp/last_google_lens_*.json")
+        )
+        for f in cleanup_files:
+            try:
+                os.remove(f)
+            except:
+                pass
+        print(f"[Startup] Cleaned {len(cleanup_files)} files from previous session")
+    except Exception as e:
+        print(f"[Startup] Cleanup skipped: {e}")
 
     with gr.Row():
         # ========== LEFT PANEL: Technical Demo ==========
@@ -348,21 +610,49 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
                 show_label=False
             )
 
-            # Results display
-            gr.Markdown("#### ✂️ 分割结果")
+            # Results display - paired by clothing type
+            gr.Markdown("#### 👕 上衣：检测结果 + 分割")
             with gr.Row():
+                upper_detection_result = gr.Image(
+                    type="pil",
+                    label="上衣检测框",
+                    interactive=False,
+                    height=200
+                )
                 upper_result = gr.Image(
                     type="pil",
-                    label="上衣",
+                    label="上衣分割",
+                    interactive=False,
+                    height=200
+                )
+
+            gr.Markdown("#### 👖 下装：检测结果 + 分割")
+            with gr.Row():
+                lower_detection_result = gr.Image(
+                    type="pil",
+                    label="下装检测框",
                     interactive=False,
                     height=200
                 )
                 lower_result = gr.Image(
                     type="pil",
-                    label="下装",
+                    label="下装分割",
                     interactive=False,
                     height=200
                 )
+
+            # Google Lens 搜索结果
+            gr.Markdown("#### 🔍 Google Lens 搜索结果")
+            gr.Markdown("*相似商品匹配*")
+            search_results_gallery = gr.Gallery(
+                label="",
+                show_label=False,
+                columns=4,
+                rows=2,
+                height=300,
+                interactive=False,
+                visible=True
+            )
 
         # ========== RIGHT PANEL: AI Butler Chat ==========
         with gr.Column(scale=1):
@@ -409,7 +699,7 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
     process_btn.click(
         fn=process_with_technical_log,
         inputs=[upload_image, item_prefix, tech_log, chatbot],
-        outputs=[tech_log, chatbot, upper_result, lower_result, approve_btn, reject_btn],
+        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn, search_results_gallery],
         show_progress=True
     )
 
@@ -446,11 +736,11 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
 
     reset_btn.click(
         fn=reset_demo,
-        outputs=[tech_log, chatbot, upper_result, lower_result, approve_btn, reject_btn]
+        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn, search_results_gallery]
     )
 
     # Auto-reset on load
-    demo.load(reset_demo)
+    demo.load(reset_demo, outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn, search_results_gallery])
 
 if __name__ == "__main__":
     demo.launch(

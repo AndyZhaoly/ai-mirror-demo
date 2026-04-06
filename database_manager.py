@@ -47,6 +47,7 @@ def add_item(
     original_price: Optional[int] = None,
     purchase_date: Optional[str] = None,
     extracted_from: Optional[str] = None,
+    detection_image: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Add a new clothing item to the database.
@@ -74,6 +75,10 @@ def add_item(
 
     date_added = datetime.now().isoformat()
 
+    # Ensure image_path is absolute
+    if image_path and not os.path.isabs(image_path):
+        image_path = os.path.abspath(image_path)
+
     item = {
         "item_id": generate_item_id(),
         "name": name,
@@ -84,6 +89,7 @@ def add_item(
         "status": "in_closet",
         "original_price": original_price,
         "image": image_path,
+        "detection_image": detection_image or "",  # Grounding DINO detection visualization
         "extracted_from": extracted_from or "",
     }
 

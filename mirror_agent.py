@@ -7,7 +7,10 @@ import json
 import base64
 from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
-from openai import OpenAI
+from openai import OpenAI, RateLimitError, APIError
+from tools import PricingTool, generate_pricing_report
+from tools.bing_visual_search import search_clothing_on_google
+import time
 
 # Moonshot API configuration
 MOONSHOT_API_KEY = os.getenv("MOONSHOT_API_KEY", "")
@@ -52,7 +55,8 @@ SYSTEM_PROMPT = """
 
 【工具使用】
 - segment_clothes: 提取衣物时使用，完成后礼貌、带正面情绪价值的方式告知
-- check_stagnancy: 检查闲置时使用，发现后要温馨提醒
+- check_wardrobe_stagnancy: 检查闲置时使用，发现后要温馨提醒
+- search_clothing_price: 用户询问"这件能卖多少钱"、"查价格"、"定价"等时使用，通过 Bing 视觉搜索获取品牌和价格参考。重要：如果用户问价格但没有提供新图片，直接使用之前对话中已经上传的图片路径，不要询问用户图片在哪里
 
 【禁忌】
 - 绝不说"这件不好看"。如果主人表达了相关意思，可以跟着话题询问是否要帮忙处理，但不可以说这件衣服不好看
@@ -87,6 +91,12 @@ class MirrorAgent:
         self.messages: List[Dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
+
+        # Initialize PricingTool
+        self.pricing_tool = PricingTool()
+
+        # Store last uploaded image path for tool calls
+        self.last_image_path: Optional[str] = None
 
         # Tool definitions for function calling
         self.tools = [
@@ -123,6 +133,23 @@ class MirrorAgent:
                         "required": ["item_id"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_clothing_price",
+                    "description": "使用 Bing 视觉搜索查找相似服装的市场价格，返回品牌信息和价格参考",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "image_path": {
+                                "type": "string",
+                                "description": "衣物图片的本地路径"
+                            }
+                        },
+                        "required": ["image_path"]
+                    }
+                }
             }
         ]
 
@@ -133,6 +160,27 @@ class MirrorAgent:
         """Register a tool handler function."""
         self.tool_handlers[name] = handler
 
+    def search_clothing_price(self, image_path: str = None) -> Dict[str, Any]:
+        """
+        使用 Bing 视觉搜索查找相似服装价格。
+
+        Args:
+            image_path: Path to clothing image. If not provided, uses last uploaded image.
+
+        Returns:
+            Search results with brand and price info
+        """
+        # Use stored image path if none provided
+        if not image_path and self.last_image_path:
+            image_path = self.last_image_path
+
+        if not image_path:
+            return {"error": "没有可用的图片，请先上传一张图片"}
+
+        print(f"[Tool] 正在用 Bing 搜索: {image_path}")
+        result = search_clothing_on_google(image_path)
+        return result
+
     def _demo_response(self, user_message: str, image_path: str = None) -> str:
         """Generate demo responses when API key is not available."""
         msg_lower = user_message.lower()
@@ -140,8 +188,8 @@ class MirrorAgent:
         if "上传" in user_message or image_path:
             return "主人！小人已收到您的照片。虽然小人目前无法调用AI大脑（缺少API密钥），但分割功能仍可正常使用。请查看左侧技术面板！"
 
-        if "卖" in user_message or "出售" in user_message:
-            return "遵命主人！小人这就为您安排最尊贵的买家！（演示模式：请设置 MOONSHOT_API_KEY 启用完整对话功能）"
+        if "卖" in user_message or "出售" in user_message or "价格" in user_message or "定价" in user_message:
+            return "遵命主人！小人这就为您查询闲鱼市场价格！（演示模式：请设置 MOONSHOT_API_KEY 启用完整对话功能）"
 
         if "好看" in user_message or "怎么样" in user_message:
             return "主人的审美天下第一！这件衣服在主人身上简直是艺术品！"
@@ -164,6 +212,10 @@ class MirrorAgent:
         Returns:
             Agent's response text
         """
+        # Store image path for potential tool calls
+        if image_path:
+            self.last_image_path = image_path
+
         # Demo mode: return hardcoded responses if no API key
         if self.client is None:
             return self._demo_response(user_message, image_path)
@@ -187,34 +239,331 @@ class MirrorAgent:
         # Add user message to history
         self.messages.append({"role": "user", "content": content})
 
-        # Call API (simplified without tools for faster response)
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=self.messages,
-                temperature=1.0,
-                max_tokens=2000
-            )
+        # Call API with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=self.messages,
+                    tools=self.tools,
+                    tool_choice="auto",
+                    temperature=1.0,
+                    max_tokens=2000
+                )
 
-            message = response.choices[0].message
+                message = response.choices[0].message
 
-            # Add assistant response to history
-            self.messages.append({
-                "role": "assistant",
-                "content": message.content
-            })
-            return message.content
+                # Check if there's a tool call
+                if message.tool_calls:
+                    # Add assistant message with tool_calls to history
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": [tc.model_dump() for tc in message.tool_calls]
+                    })
 
-        except Exception as e:
-            error_str = str(e)
-            # Handle authentication errors gracefully
-            if "401" in error_str or "Invalid Authentication" in error_str:
-                print(f"API authentication failed: {error_str}")
-                print("Falling back to demo mode...")
-                self.client = None  # Disable client for future calls
-                return self._demo_response(user_message, image_path)
-            error_msg = f"小人该死，出错了：{error_str}"
-            return error_msg
+                    # Execute tool calls
+                    for tool_call in message.tool_calls:
+                        function_name = tool_call.function.name
+                        function_args = json.loads(tool_call.function.arguments)
+
+                        print(f"[Tool Call] {function_name}({function_args})")
+
+                        # Execute the tool
+                        if function_name == "search_clothing_price":
+                            result = self.search_clothing_price(function_args.get("image_path"))
+                            tool_result = json.dumps(result, ensure_ascii=False)
+                        elif function_name in self.tool_handlers:
+                            handler = self.tool_handlers[function_name]
+                            result = handler(**function_args)
+                            tool_result = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
+                        else:
+                            tool_result = json.dumps({"error": f"Unknown tool: {function_name}"})
+
+                        # Add tool result to history
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_result
+                        })
+
+                    # Get final response from model
+                    final_response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=self.messages,
+                        temperature=1.0,
+                        max_tokens=2000
+                    )
+
+                    final_message = final_response.choices[0].message
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": final_message.content
+                    })
+                    return final_message.content
+
+                else:
+                    # No tool call, regular response
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": message.content
+                    })
+                    return message.content
+
+            except (RateLimitError, APIError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 * (2 ** attempt)
+                    print(f"[MirrorAgent] API overloaded (attempt {attempt + 1}/{max_retries}), waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    error_str = str(e)
+                    error_msg = f"小人该死，API服务器太忙了，请稍后再试..."
+                    return error_msg
+            except Exception as e:
+                error_str = str(e)
+                # Handle authentication errors gracefully
+                if "401" in error_str or "Invalid Authentication" in error_str:
+                    print(f"API authentication failed: {error_str}")
+                    print("Falling back to demo mode...")
+                    self.client = None
+                    return self._demo_response(user_message, image_path)
+                error_msg = f"小人该死，出错了：{error_str}"
+                return error_msg
+
+    def analyze_and_price(self, image_path: str, item_description: str = "") -> str:
+        """
+        分析衣物并给出定价建议 - 更自然的Agent回复
+
+        Args:
+            image_path: 衣物图片路径
+            item_description: VLM分析出的衣物描述（可选）
+
+        Returns:
+            Agent的自然语言回复
+        """
+        if not os.path.exists(image_path):
+            return "主人，小镜找不到图片呢，能重新上传一下吗？"
+
+        # 步骤1: 先给出"正在查"的回复
+        immediate_response = self._generate_searching_response(item_description)
+
+        return immediate_response
+
+    def _generate_searching_response(self, item_description: str) -> str:
+        """生成'正在查询中'的自然回复"""
+        if not item_description:
+            item_description = "这件衣服"
+
+        responses = [
+            f"哇～主人这件{item_description}好有品味！✨ 小镜正在帮您查市场行情，稍等片刻哦～",
+            f"收到！主人这件{item_description}看起来很高级呢～ 让我查查同款的价格，马上回来！🔍",
+            f"主人眼光真好！这件{item_description}的剪裁和配色都很棒～ 小镜正在搜索市场价格，请稍候... 💫",
+            f"好漂亮的{item_description}！主人穿搭太有范儿了～ 小镜这就去查查能卖多少钱，等我一下！💰",
+        ]
+        import random
+        return random.choice(responses)
+
+    def generate_price_analysis(self, search_result: Dict, vlm_analysis: Dict = None) -> str:
+        """
+        基于搜索结果生成自然的定价分析
+
+        Args:
+            search_result: 图搜结果
+            vlm_analysis: VLM分析结果（可选）
+
+        Returns:
+            Agent的定价建议回复
+        """
+        if not search_result.get("success"):
+            return self._generate_fallback_price_response(vlm_analysis)
+
+        brand = search_result.get("brand") or (vlm_analysis.get("brand") if vlm_analysis else None) or "这款单品"
+        matches = search_result.get("matches", [])
+        raw_text = search_result.get("raw_text", "")
+
+        # 从原始文本中提取价格信息
+        import re
+        prices = []
+        price_patterns = [
+            r'\$([\d,]+)',  # $35
+            r'¥([\d,]+)',   # ¥199
+            r'([\d,]+)\s*元',  # 199元
+            r'£([\d,]+)',   # £29
+            r'€([\d,]+)',   # €35
+        ]
+
+        for text in [raw_text] + [m.get("title", "") for m in matches[:5]]:
+            for pattern in price_patterns:
+                matches_price = re.findall(pattern, text)
+                for p in matches_price:
+                    try:
+                        price_val = int(p.replace(",", ""))
+                        if 10 < price_val < 10000:  # 合理价格范围
+                            prices.append(price_val)
+                    except:
+                        pass
+
+        # 生成回复
+        return self._generate_price_advice(brand, prices, matches, vlm_analysis)
+
+    def _generate_price_advice(self, brand: str, prices: List[int], matches: List[Dict], vlm_analysis: Dict = None) -> str:
+        """生成定价建议"""
+        category = vlm_analysis.get("category", "单品") if vlm_analysis else "单品"
+        condition = vlm_analysis.get("condition", "良好") if vlm_analysis else "良好"
+
+        # 构建回复
+        lines = []
+
+        # 开头 - 查到了
+        openings = [
+            f"查到了！主人～ 🎉",
+            f"有结果了！主人～ ✨",
+            f"找到了！主人～ 💫",
+        ]
+        import random
+        lines.append(random.choice(openings))
+        lines.append("")
+
+        # 品牌和品类识别
+        if brand and brand != "这款单品":
+            lines.append(f"这件是 **{brand}** 的{category}，")
+        else:
+            lines.append(f"这件{category}的")
+
+        # 价格分析
+        if prices:
+            avg_price = sum(prices) // len(prices)
+            min_price = min(prices)
+            max_price = max(prices)
+
+            # 根据成色调整建议售价
+            condition_factor = {"全新": 0.7, "几乎全新": 0.6, "良好": 0.5, "有明显穿着痕迹": 0.3}
+            factor = condition_factor.get(condition, 0.5)
+            suggested_price = int(avg_price * factor)
+
+            lines.append(f"市场价格大概在 **¥{min_price} - ¥{max_price}** 之间，")
+            lines.append(f"平均 ¥{avg_price} 左右。")
+            lines.append("")
+            lines.append(f"考虑到这件{category}的**{condition}**成色，")
+            lines.append(f"小镜建议主人定价 **¥{suggested_price}** 左右，")
+
+            # 定价建议理由
+            if suggested_price >= 500:
+                lines.append(f"属于中高端价位，应该能吸引到有品位的买家～ 💎")
+            elif suggested_price >= 200:
+                lines.append(f"价格适中，性价比很高，应该很快能出手！ 💰")
+            else:
+                lines.append(f"走亲民路线，应该很快就能卖掉～ 🛍️")
+        else:
+            # 没找到价格
+            lines.append("小镜暂时没找到这款的参考价格...")
+            lines.append("建议主人可以根据品牌知名度自行定价，")
+            lines.append("或者去闲鱼/小红书看看同类商品～ 🤔")
+
+        lines.append("")
+        lines.append(f"主人要是想出手，小镜可以帮您发布哦！")
+
+        return "\n".join(lines)
+
+    def _generate_fallback_price_response(self, vlm_analysis: Dict = None) -> str:
+        """当搜索失败时的回复"""
+        category = vlm_analysis.get("category", "单品") if vlm_analysis else "单品"
+        return f"抱歉主人～小镜查价格的时候遇到了一点小问题...😅\n\n不过看这件{category}的质感和设计，应该能卖个好价钱！建议主人可以去闲鱼搜搜同款参考一下，或者等会再让小镜试试？"
+
+    def generate_gemini_price_analysis(self, gemini_result: Dict) -> str:
+        """
+        基于 Gemini 3.1 Pro 的分析结果生成自然回复
+
+        Args:
+            gemini_result: Gemini 分析结果
+
+        Returns:
+            Agent的定价建议回复
+        """
+        if not gemini_result or not gemini_result.get("success"):
+            return "抱歉主人～小镜这次没能识别出这件衣服的具体信息。主人可以直接告诉我这是什么品牌和型号，小镜帮您查价格！"
+
+        item = gemini_result.get("item_details", {})
+        official = gemini_result.get("official_price", {})
+        resale = gemini_result.get("resale_estimate", {})
+
+        brand = item.get("brand", "Unknown")
+        model = item.get("model_name", "")
+        product_code = item.get("product_code", "")
+        category = item.get("category", "单品")
+        material = item.get("material", "")
+        condition = item.get("condition", "良好")
+
+        lines = []
+
+        # 开头 - 查到了
+        openings = [
+            "查到了！主人～ 🎉",
+            "有结果了！主人～ ✨",
+            "找到了！主人～ 💫",
+        ]
+        import random
+        lines.append(random.choice(openings))
+        lines.append("")
+
+        # 品牌和型号
+        if brand and brand != "Unknown":
+            if model and model != "未识别":
+                lines.append(f"这件是 **{brand}** 的 **{model}**！")
+            else:
+                lines.append(f"这件是 **{brand}** 的{category}！")
+
+            if product_code and product_code != "N/A":
+                lines.append(f"📦 货号：**{product_code}**")
+        else:
+            lines.append(f"这件{category}的")
+
+        lines.append("")
+
+        # 材质和特征
+        if material:
+            lines.append(f"• **材质**：{material}")
+        lines.append(f"• **成色**：{condition}")
+        lines.append("")
+
+        # 价格分析
+        lines.append("💰 **价格参考**")
+
+        if official.get("amount"):
+            currency = official.get("currency", "")
+            amount = official["amount"]
+            lines.append(f"• 官方指导价：{amount} {currency}")
+
+        if resale.get("max_price"):
+            min_p = resale.get("min_price", 0)
+            max_p = resale["max_price"]
+            confidence = resale.get("confidence", "中")
+
+            lines.append(f"• 二手市场价：¥{min_p} - ¥{max_p}")
+            lines.append("")
+            lines.append(f"考虑到这件衣服的**{condition}**成色，")
+            lines.append(f"小镜建议主人定价 **¥{max_p}** 左右，")
+
+            if max_p >= 10000:
+                lines.append(f"属于奢侈品价位，保值性不错，应该能找到识货的买家～ 💎")
+            elif max_p >= 1000:
+                lines.append(f"属于中高端价位，品牌认可度高的应该很快能出手！ 💰")
+            else:
+                lines.append(f"价格亲民，流通性好，应该很快就能卖掉～ 🛍️")
+
+            if confidence == "高":
+                lines.append("\n✅ Gemini 对这次识别很有信心，信息应该比较准确！")
+            elif confidence == "中":
+                lines.append("\n⚠️ 建议主人可以再核实一下品牌和型号～")
+        else:
+            lines.append("小镜暂时没找到这款的二手参考价格...")
+            lines.append("建议主人可以根据品牌知名度自行定价～")
+
+        lines.append("")
+        lines.append(f"主人要是想出手，小镜可以帮您发布到二手市场哦！")
+
+        return "\n".join(lines)
 
     def reset_conversation(self):
         """Reset conversation history (keeping system prompt)."""
