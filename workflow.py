@@ -263,7 +263,13 @@ def evaluate_node(state: WorkflowState) -> WorkflowState:
         state["market_price"] = market_price
         state["pricing_data"] = price_data or {"suggested_price": market_price, "sample_size": 0}
 
-        # Step 3: Build simplified recommendation with real data only
+        # Step 3: Get mock buyer offer
+        add_log(state, f"💰 查找买家报价...")
+        buyer_offer = get_buyer_offer(market_price)
+        state["buyer_offer"] = buyer_offer
+        add_log(state, f"   └─ 买家: {buyer_offer['buyer_name']}, 报价: ¥{buyer_offer['offer_price']}")
+
+        # Step 4: Build simplified recommendation with real data only
         add_log(state, f"📝 生成分析报告...")
 
         item_name = item['name']
@@ -570,9 +576,16 @@ def resume_workflow(user_approved: bool, initial_state: WorkflowState = None):
 
     # Resume execution
     final_state = None
-    for event in workflow_app.stream(updated_state, {"configurable": {"thread_id": "fashionclaw_demo"}}):
-        for key, value in event.items():
-            final_state = value
+    try:
+        for event in workflow_app.stream(updated_state, {"configurable": {"thread_id": "fashionclaw_demo"}}):
+            for key, value in event.items():
+                final_state = value
+                print(f"[resume_workflow] Event: {key}, state status: {value.get('status', 'unknown')}")
+    except Exception as e:
+        print(f"[resume_workflow] Error during workflow execution: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
     return final_state
 

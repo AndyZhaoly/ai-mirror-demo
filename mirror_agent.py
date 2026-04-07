@@ -1,5 +1,5 @@
 """
-AI Fashion Butler Agent powered by Moonshot (Kimi) API.
+AI Fashion Butler Agent powered by Gemini API.
 Implements a "submissive and flattering" (舔狗) fashion管家 persona.
 """
 import os
@@ -11,10 +11,16 @@ from openai import OpenAI, RateLimitError, APIError
 from tools import PricingTool, generate_pricing_report
 import time
 
-# Moonshot API configuration
-MOONSHOT_API_KEY = os.getenv("MOONSHOT_API_KEY", "")
-MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
-DEFAULT_MODEL = "kimi-k2.5"  # Kimi K2.5 model
+# AI Model Configuration - Easy to switch
+# Provider: Gemini (OpenAI compatible)
+API_KEY = os.getenv("GEMINI_API_KEY", "")
+BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
+
+# Provider: Moonshot (Kimi) - Uncomment to use
+# API_KEY = os.getenv("MOONSHOT_API_KEY", "")
+# BASE_URL = "https://api.moonshot.cn/v1"
+# DEFAULT_MODEL = "kimi-k2.5"
 
 SYSTEM_PROMPT = """
 
@@ -47,14 +53,20 @@ SYSTEM_PROMPT = """
 - 不反驳、不否定、不争执。用户对穿搭有评价时，顺着情绪温和回应
 - 用户决定保留/处置衣物，均表示理解与支持
 - 始终维护用户的审美与选择，不质疑、不抬杠
-- 主人说不好看 → "看起来这件衣服不是最理想呢～ 主人您不喜欢的话，小镜这就帮您处理退换货吧？”
-- 主人要卖掉 → "小镜这就为您安排寻找买家"
-- 主人要留着 → "主人的眼光独到，今天又get到了美美新衣”
+- 主人说不好看 → “看起来这件衣服不是最理想呢～ 主人您不喜欢的话，小镜这就帮您处理退换货吧？”
+- 主人要卖掉 → “小镜这就为您安排寻找买家”
+- 主人要留着 → “主人的眼光独到，今天又get到了美美新衣”
+
+5.【出售意图判断 - 多轮确认】
+- 用户表达有疑虑的出售意向（如”我想卖，但不确定价格”、”考虑一下”、”再想想”、”价格合适就卖”）→ **不要调用工具**，用自然语言回复讨论价格和细节
+- 用户明确无犹豫地说出售（如”卖了吧”、”确定出售”、”帮我挂到Poshmark”、”出掉”）→ 调用 publish_to_poshmark(execute=true)
+- 用户从犹豫转为确认后 → 再调用工具执行
 
 
 【工具使用】
 - segment_clothes: 提取衣物时使用，完成后礼貌、带正面情绪价值的方式告知
 - check_wardrobe_stagnancy: 检查闲置时使用，发现后要温馨提醒
+- publish_to_poshmark: **只有当用户明确、无犹豫地表达出售意愿时才调用(execute=true)**。如果用户有疑虑（"不确定价格"、"考虑一下"等），不要调用，先用自然语言讨论
 
 【隐式记忆 - 小镜知道但用户看不到的信息】
 - 每次分析完成后，小镜会在记忆里记录参考来源链接
@@ -75,7 +87,7 @@ class MirrorAgent:
 
     def __init__(self, api_key: str = None, model: str = None):
         """Initialize the agent with Moonshot API."""
-        self.api_key = api_key or MOONSHOT_API_KEY
+        self.api_key = api_key or API_KEY
         self.model = model or DEFAULT_MODEL
         self.client = None
 
@@ -83,7 +95,7 @@ class MirrorAgent:
             try:
                 self.client = OpenAI(
                     api_key=self.api_key,
-                    base_url=MOONSHOT_BASE_URL
+                    base_url=BASE_URL
                 )
             except Exception as e:
                 print(f"Warning: Failed to initialize OpenAI client: {e}")
@@ -140,6 +152,23 @@ class MirrorAgent:
                     }
                 }
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "publish_to_poshmark",
+                    "description": "用户想出售衣物到Poshmark平台时调用。注意：只有用户表达**明确且无疑虑**的出售意愿时才执行。如果用户说'我想卖，但我不确定价格'、'考虑一下'、'再想想'等有犹豫的表达，不要调用此工具，而是用自然语言回复讨论。明确意图示例：'帮我卖了'、'出掉吧'、'挂到Poshmark'、'发布吧'、'卖了吧'、'确定出售'",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "execute": {
+                                "type": "boolean",
+                                "description": "是否立即执行发布。只有用户明确无犹豫地说要卖时才为true。如果用户有任何疑虑、想问价格、想再考虑，必须为false"
+                            }
+                        },
+                        "required": ["execute"]
+                    }
+                }
+            },
         ]
 
         # Tool handlers (to be injected from outside)
@@ -148,6 +177,7 @@ class MirrorAgent:
         # Register tool handlers
         self.register_tool("segment_clothes", lambda **kwargs: {"status": "success"})
         self.register_tool("check_wardrobe_stagnancy", lambda **kwargs: {"stagnant": False})
+        self.register_tool("publish_to_poshmark", lambda execute=False, **kwargs: {"status": "triggered" if execute else "need_confirm"})
 
     def register_tool(self, name: str, handler: Callable):
         """Register a tool handler function."""
@@ -161,12 +191,12 @@ class MirrorAgent:
             return "主人！小人已收到您的照片。虽然小人目前无法调用AI大脑（缺少API密钥），但分割功能仍可正常使用。请查看左侧技术面板！"
 
         if "卖" in user_message or "出售" in user_message or "价格" in user_message or "定价" in user_message:
-            return "遵命主人！小人这就为您查询闲鱼市场价格！（演示模式：请设置 MOONSHOT_API_KEY 启用完整对话功能）"
+            return "遵命主人！小人这就为您查询闲鱼市场价格！（演示模式：请设置 API 密钥启用完整对话功能）"
 
         if "好看" in user_message or "怎么样" in user_message:
             return "主人的审美天下第一！这件衣服在主人身上简直是艺术品！"
 
-        return "主人说得对！小人愚钝，正在努力学习中...（提示：设置 MOONSHOT_API_KEY 可启用AI对话）"
+        return "主人说得对！小人愚钝，正在努力学习中...（提示：设置 API 密钥可启用AI对话）"
 
     def encode_image_to_base64(self, image_path: str) -> str:
         """Encode image to base64 for multimodal input."""
@@ -222,12 +252,23 @@ class MirrorAgent:
         if self.client is None:
             return self._demo_response(user_message, image_path)
 
-        # 滑动窗口：保留 System Prompt + 最近 10 轮对话（20 条消息）
-        MAX_HISTORY = 20  # 10 轮对话 = 20 条消息（user + assistant）
+        # 滑动窗口：保留 System Prompt + 最近 8 轮对话（16 条消息）
+        # 限制更严格是因为 tool 调用会额外增加消息数
+        MAX_HISTORY = 16  # 8 轮对话 = 16 条消息（user + assistant）
         if len(self.messages) > MAX_HISTORY + 1:  # +1 for system prompt
-            # 保留 system prompt 和最近 MAX_HISTORY 条
-            self.messages = [self.messages[0]] + self.messages[-MAX_HISTORY:]
-            print(f"[MirrorAgent] History trimmed to {len(self.messages)} messages")
+            # 智能截断：找到最后一个完整的对话轮次（user -> assistant/tool）
+            # 避免在 tool 调用中间截断
+            cutoff_idx = len(self.messages) - MAX_HISTORY
+            # 确保从 user 消息开始
+            while cutoff_idx < len(self.messages) and self.messages[cutoff_idx]["role"] != "user":
+                cutoff_idx += 1
+            if cutoff_idx < len(self.messages):
+                self.messages = [self.messages[0]] + self.messages[cutoff_idx:]
+                print(f"[MirrorAgent] History trimmed to {len(self.messages)} messages (smart cutoff)")
+            else:
+                # Fallback: 简单截断
+                self.messages = [self.messages[0]] + self.messages[-MAX_HISTORY:]
+                print(f"[MirrorAgent] History trimmed to {len(self.messages)} messages")
 
         # Build user message
         if image_path and os.path.exists(image_path):
@@ -287,12 +328,29 @@ class MirrorAgent:
                         else:
                             tool_result = json.dumps({"error": f"Unknown tool: {function_name}"})
 
-                        # Add tool result to history
+                        # Add tool result to history with a summary for display
                         self.messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "content": tool_result
                         })
+
+                        # 对于 publish_to_poshmark 工具，在 tool 结果后添加一个友好的 assistant 消息
+                        # 这样即使后续 API 调用失败，用户也能看到工具执行结果
+                        if function_name == "publish_to_poshmark":
+                            try:
+                                result_obj = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+                                if result_obj.get("status") == "success":
+                                    # 发布成功，已经在最终结果中处理
+                                    pass
+                                elif result_obj.get("status") == "error":
+                                    # 发布失败，提前告知用户
+                                    self.messages.append({
+                                        "role": "assistant",
+                                        "content": f"抱歉主人，发布遇到了问题：{result_obj.get('message', '未知错误')}"
+                                    })
+                            except:
+                                pass
 
                     # Get final response from model
                     final_response = self.client.chat.completions.create(
@@ -303,11 +361,13 @@ class MirrorAgent:
                     )
 
                     final_message = final_response.choices[0].message
-                    self.messages.append({
-                        "role": "assistant",
-                        "content": final_message.content
-                    })
-                    return final_message.content
+                    # 只有当有实际内容时才添加到历史，避免空消息
+                    if final_message.content:
+                        self.messages.append({
+                            "role": "assistant",
+                            "content": final_message.content
+                        })
+                    return final_message.content if final_message.content else "小镜已为您处理完毕，请查看结果～"
 
                 else:
                     # No tool call, regular response
@@ -616,7 +676,7 @@ class MirrorAgent:
 
         # In-Context Learning Prompt with examples
         prompt = f"""
-请为以下商品生成闲鱼和小红书发布模板。
+请为以下商品生成闲鱼、小红书和 Poshmark 发布模板。
 
 【商品信息】
 - 品牌：{brand}
@@ -626,7 +686,8 @@ class MirrorAgent:
 - 材质：{material if material else '未说明'}
 - 成色：{condition}
 - 原价：{official_price_str if official_price_str else '专柜正品'}
-- 建议售价：¥{suggested_price}
+- 建议售价（国内）：¥{suggested_price}
+- 建议售价（海外）：${int(suggested_price / 7)} USD
 
 【参考示例 - 闲鱼模板】
 
@@ -674,14 +735,40 @@ class MirrorAgent:
 
 #断舍离 #LouisVuitton #闲置转让 #夹克
 
+【参考示例 - Poshmark 英文模板】
+
+📝 Title:
+{brand} {model if model else category} | {condition} Condition | Authentic
+
+💰 Price: ${int(suggested_price / 7)}
+
+📖 Description:
+✨ Beautiful {brand} {model if model else category} in {condition} condition.
+
+📦 Product Code: {product_code}
+🎨 Material: {material if material else 'See photos'}
+📏 Size: OS (One Size) - Please refer to measurements
+💎 Original Price: {official_price_str if official_price_str else 'Authentic item'}
+🔥 Now Only: ${int(suggested_price / 7)}
+
+✅ Authenticity Guaranteed
+✅ Fast Shipping from US
+✅ Reasonable Offers Welcome
+✅ Bundle & Save
+
+🏷️ Tags:
+#{brand.replace(' ', '') if brand else 'Vintage'} #designer #fashion #{category.replace(' ', '')} #preloved
+
 ---
 
-请根据以上商品信息，生成类似的发布模板，保持格式和风格一致。模板要专业、吸引人，适合二手交易。请生成【闲鱼模板】和【小红书模板】两部分，用分隔线隔开。
+请根据以上商品信息，生成三部分模板。Poshmark 模板要用英文，适合海外买家。
 
 输出格式：
 📋 【闲鱼发布模板】（可直接复制使用）
 ...
 📕 【小红书发布模板】
+...
+🇺🇸 【Poshmark 发布模板】(English)
 ...
 """
 
@@ -709,6 +796,16 @@ class MirrorAgent:
         brand = item.get("brand", "")
         model = item.get("model_name", "")
         condition = item.get("condition", "几乎全新")
+
+        # 简单 USD 转换（如果 price 是人民币）
+        usd_price = "N/A"
+        try:
+            import re
+            price_num = re.findall(r'\d+', str(price))
+            if price_num:
+                usd_price = f"${int(int(price_num[0]) / 7)}"
+        except:
+            usd_price = price
 
         template = f"""📋 【闲鱼发布模板】
 
@@ -745,6 +842,26 @@ class MirrorAgent:
 喜欢的姐妹私我哦！💌
 
 #断舍离 #{brand.replace(' ', '') if brand else '闲置'} #闲置转让
+
+━━━━━━━━━━━━━━━━━━━━━━━
+
+🇺🇸 【Poshmark 发布模板】(English)
+
+📝 Title:
+{brand} {model if model else item_name} | {condition} Condition
+
+💰 Price: {usd_price}
+
+📖 Description:
+✨ Beautiful {brand} {model if model else item_name} in {condition} condition.
+
+📏 Size: OS (One Size) - Please check measurements
+✅ Authenticity Guaranteed
+✅ Fast Shipping
+✅ Reasonable Offers Welcome
+
+🏷️ Tags:
+#{brand.replace(' ', '') if brand else 'Vintage'} #designer #fashion #preloved
 """
         return template
 
@@ -774,12 +891,42 @@ class MirrorAgent:
 
             print(f"[Agent] 开始自动发布到 Poshmark: {image_path}")
 
-            # 调用自动化脚本
+            # 先生成 Agent 文案，提取 Poshmark 描述部分
+            listing_template = self.generate_listing_template(
+                gemini_result=self.last_gemini_result,
+                item_name="",
+                price=""
+            )
+
+            # 提取 Poshmark 描述部分（从 "🇺🇸 【Poshmark 发布模板】" 到 "━━━" 结束）
+            custom_description = None
+            if "🇺🇸 【Poshmark 发布模板】" in listing_template or "【Poshmark 发布模板】" in listing_template:
+                import re
+                # 尝试匹配 Poshmark 模板部分
+                match = re.search(r'【Poshmark 发布模板.*?\n\n📝 Title:.*?\n\n💰 Price:.*?\n\n📖 Description:\n(.*?)(?:\n\n[📏🏷️━])', listing_template, re.DOTALL)
+                if match:
+                    custom_description = match.group(1).strip()
+                    print(f"[Agent] 已提取 Agent 生成的 Poshmark 文案")
+                else:
+                    # 简单提取：找 Description: 之后的内容
+                    if "📖 Description:" in listing_template:
+                        desc_start = listing_template.find("📖 Description:")
+                        desc_text = listing_template[desc_start + len("📖 Description:"):]
+                        # 找到下一个分隔符
+                        for sep in ["\n\n📏", "\n\n🏷️", "\n━━━"]:
+                            if sep in desc_text:
+                                desc_text = desc_text[:desc_text.find(sep)]
+                                break
+                        custom_description = desc_text.strip()
+                        print(f"[Agent] 已提取 Agent 生成的 Poshmark 文案（备用方式）")
+
+            # 调用自动化脚本，传入自定义文案
             result = auto_publish_from_gemini_result(
                 image_path=image_path,
                 gemini_result=self.last_gemini_result,
                 headless=False,  # Demo 时显示浏览器
-                auto_submit=auto_submit
+                auto_submit=auto_submit,
+                custom_description=custom_description
             )
 
             if result.get("success"):
@@ -841,6 +988,48 @@ class MirrorAgent:
 
         lines.append("\n主人可以点击链接查看详情哦～")
         return "\n".join(lines)
+
+    def sync_history_from_gradio(self, gradio_history: List[Dict[str, Any]]):
+        """
+        从 Gradio UI 历史同步对话到 Agent 内部历史。
+        确保 Agent 有完整的上下文，避免对话被"吞"。
+        """
+        if not gradio_history:
+            return
+
+        # 保留 system prompt
+        system_msg = self.messages[0] if self.messages and self.messages[0]["role"] == "system" else {"role": "system", "content": SYSTEM_PROMPT}
+        new_messages = [system_msg]
+
+        # 转换 Gradio 历史到 Agent 格式
+        for msg in gradio_history:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                # Gradio content 可能是字符串或列表
+                if isinstance(content, list):
+                    # 提取列表中的文本内容
+                    text_parts = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text_parts.append(item.get("text", ""))
+                        elif isinstance(item, str):
+                            text_parts.append(item)
+                    content = " ".join(text_parts)
+                # 移除 [图片] 标记，保留实际文本
+                if isinstance(content, str):
+                    content = content.replace(" [图片]", "").strip()
+                    if content:
+                        new_messages.append({"role": "user", "content": content})
+            elif msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                # 跳过占位消息和工具提示
+                if isinstance(content, str) and content and content not in ["小人正在思考...", "小人正在重新分析衣物，请稍候..."]:
+                    new_messages.append({"role": "assistant", "content": content})
+
+        # 只替换如果新历史更长或明显不同（避免覆盖 tool 调用中间状态）
+        if len(new_messages) > len(self.messages):
+            print(f"[Agent] Syncing history from Gradio: {len(self.messages)} -> {len(new_messages)} messages")
+            self.messages = new_messages
 
     def reset_conversation(self):
         """Reset conversation history (keeping system prompt)."""

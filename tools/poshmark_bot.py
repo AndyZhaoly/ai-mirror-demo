@@ -76,6 +76,13 @@ def create_poshmark_listing(
 
             page = browser.new_page()
 
+            # 将浏览器窗口带到前台（macOS）
+            try:
+                import subprocess
+                subprocess.run(["osascript", "-e", 'tell application "Chromium" to activate'], check=False, timeout=2)
+            except:
+                pass
+
             # 进入发帖页面
             print(f"[PoshmarkBot] 进入 Poshmark 发帖页面...")
             page.goto("https://poshmark.com/create-listing", timeout=120000)
@@ -500,7 +507,8 @@ def auto_publish_from_gemini_result(
     image_path: str,
     gemini_result: dict,
     headless: bool = False,
-    auto_submit: bool = False
+    auto_submit: bool = False,
+    custom_description: str = None
 ) -> dict:
     """
     根据 Gemini 分析结果自动发布到 Poshmark
@@ -510,6 +518,7 @@ def auto_publish_from_gemini_result(
         gemini_result: Gemini 分析结果
         headless: 是否无头模式
         auto_submit: 是否自动提交
+        custom_description: 可选，自定义描述文案（如 Agent 生成的文案）
 
     Returns:
         发布结果
@@ -530,23 +539,28 @@ def auto_publish_from_gemini_result(
     else:
         title = f"Vintage {category}"[:50]
 
-    # 构建描述（加入尺码免责声明）
-    description_parts = [
-        f"Beautiful {brand} {model}. {condition} condition.",
-        "",
-        f"Original Price: ${official.get('amount', 'N/A')}",
-        "",
-        f"Material: {item.get('material', 'Unknown')}",
-        f"Color: {item.get('color', 'Mixed')}",
-        "",
-        "📏 Size: OS (One Size). Size tag is missing/unclear. Listed as OS.",
-        "Please refer to measurements or photos before purchasing.",
-        "",
-        "Ships from US. Open to reasonable offers!",
-        "",
-        f"Tags: #{brand.replace(' ', '')} #vintage #fashion #{category.replace(' ', '')} #onesize"
-    ]
-    description = "\n".join(description_parts)
+    # 构建描述 - 优先使用自定义文案（如 Agent 生成的）
+    if custom_description:
+        description = custom_description
+        print(f"[PoshmarkBot] 使用 Agent 生成的自定义文案")
+    else:
+        # 构建默认描述（加入尺码免责声明）
+        description_parts = [
+            f"Beautiful {brand} {model}. {condition} condition.",
+            "",
+            f"Original Price: ${official.get('amount', 'N/A')}",
+            "",
+            f"Material: {item.get('material', 'Unknown')}",
+            f"Color: {item.get('color', 'Mixed')}",
+            "",
+            "📏 Size: OS (One Size). Size tag is missing/unclear. Listed as OS.",
+            "Please refer to measurements or photos before purchasing.",
+            "",
+            "Ships from US. Open to reasonable offers!",
+            "",
+            f"Tags: #{brand.replace(' ', '')} #vintage #fashion #{category.replace(' ', '')} #onesize"
+        ]
+        description = "\n".join(description_parts)
 
     # 价格
     original_price = official.get("amount", 100)
