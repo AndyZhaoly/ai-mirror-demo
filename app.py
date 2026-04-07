@@ -411,7 +411,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
 
 def approve_sale_from_chat(history):
     """Handle sale approval from chat."""
-    global upload_workflow_state, agent_instance
+    global upload_workflow_state, agent_instance, last_extracted_items
 
     history = list(history) if history else []
 
@@ -442,6 +442,23 @@ def approve_sale_from_chat(history):
     else:
         listing_template = "（Agent 未初始化，无法生成发布模板）"
 
+    # 【新增】自动发布到 Poshmark
+    poshmark_result_msg = ""
+    if agent_instance:
+        # 获取要发布的图片路径
+        item_image_path = item.get('image', '') if item else ''
+        if not item_image_path and last_extracted_items:
+            # 使用最后提取的物品图片
+            item_image_path = last_extracted_items[0].get('image', '')
+
+        if item_image_path and os.path.exists(item_image_path):
+            # 调用 Poshmark 发布（同步执行，会打开浏览器）
+            poshmark_result = agent_instance.publish_to_poshmark(
+                item_image_path=item_image_path,
+                auto_submit=False  # Demo 模式，不自动提交
+            )
+            poshmark_result_msg = f"\n\n🌐 **Poshmark 发布**\n{poshmark_result}"
+
     response = f"""✨ 太好了主人！
 
 这件**{item.get('name', '美衣')}**已经成功安排出售啦！预估成交价 **¥{price}**～
@@ -458,7 +475,7 @@ def approve_sale_from_chat(history):
 
 {listing_template}
 
-━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━{poshmark_result_msg}
 
 💡 小镜提示：复制上方模板到闲鱼/小红书即可发布！需要小镜帮您找新款吗？😊"""
 

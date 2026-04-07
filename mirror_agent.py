@@ -101,6 +101,9 @@ class MirrorAgent:
         # Store reference sources from Gemini analysis for user queries
         self.last_reference_sources: List[Dict[str, str]] = []
 
+        # Store Gemini analysis result for publishing to Poshmark
+        self.last_gemini_result: Optional[Dict[str, Any]] = None
+
         # Tool definitions for function calling
         self.tools = [
             {
@@ -487,6 +490,9 @@ class MirrorAgent:
         if not gemini_result or not gemini_result.get("success"):
             return "抱歉主人～小镜这次没能识别出这件衣服的具体信息。主人可以直接告诉我这是什么品牌和型号，小镜帮您查价格！"
 
+        # 保存分析结果，供后续发布到 Poshmark 使用
+        self.last_gemini_result = gemini_result
+
         item = gemini_result.get("item_details", {})
         official = gemini_result.get("official_price", {})
         resale = gemini_result.get("resale_estimate", {})
@@ -742,6 +748,73 @@ class MirrorAgent:
 """
         return template
 
+    def publish_to_poshmark(self, item_image_path: str = None, auto_submit: bool = False) -> str:
+        """
+        自动发布到 Poshmark（Agent 工具）
+
+        Args:
+            item_image_path: 图片路径，默认使用 last_image_path
+            auto_submit: 是否自动提交（Demo 建议 False）
+
+        Returns:
+            发布结果消息
+        """
+        # 使用默认图片路径
+        image_path = item_image_path or self.last_image_path
+        if not image_path or not os.path.exists(image_path):
+            return "抱歉主人～小镜找不到要发布的图片，请先上传衣服照片哦！"
+
+        # 需要 Gemini 结果来生成文案
+        if not hasattr(self, 'last_gemini_result') or not self.last_gemini_result:
+            return "主人，小镜需要先分析这件衣服的信息才能发布哦～请先让小镜分析一下！"
+
+        try:
+            # 导入 bot 模块
+            from tools.poshmark_bot import auto_publish_from_gemini_result
+
+            print(f"[Agent] 开始自动发布到 Poshmark: {image_path}")
+
+            # 调用自动化脚本
+            result = auto_publish_from_gemini_result(
+                image_path=image_path,
+                gemini_result=self.last_gemini_result,
+                headless=False,  # Demo 时显示浏览器
+                auto_submit=auto_submit
+            )
+
+            if result.get("success"):
+                if result.get("status") == "form_filled":
+                    return """✨ 主人～小镜已经帮您打开发布页面啦！
+
+📋 已自动填写：
+• 标题和描述（基于 Gemini 分析生成）
+• 分类和品牌信息
+• 价格（原价 vs 二手价）
+• 图片已上传
+
+🖱️ 请主人在浏览器里确认一下信息，没问题就可以点击发布啦！
+
+💡 小镜提示：这是 Poshmark 平台，面向海外买家，用美元结算哦～"""
+                else:
+                    return f"✅ 发布成功！{result.get('message')}"
+            else:
+                if result.get("status") == "login_required":
+                    return """🔐 主人，小镜检测到您需要登录 Poshmark～
+
+请在新打开的浏览器窗口中：
+1. 点击 "Log In" 或 "Sign Up"
+2. 使用邮箱/Apple/Google 账号登录
+3. 登录成功后小镜会自动继续填写
+
+（只需要登录一次，之后小镜会记住您的登录状态）"""
+                else:
+                    return f"抱歉主人，发布遇到了问题：{result.get('message')}"
+
+        except ImportError as e:
+            return f"小镜的 Poshmark 助手模块还没准备好呢：{e}"
+        except Exception as e:
+            return f"发布时出错了：{str(e)}"
+
     def get_reference_sources(self) -> str:
         """
         获取上次分析的参考链接，用于回答用户追问
@@ -773,6 +846,8 @@ class MirrorAgent:
         """Reset conversation history (keeping system prompt)."""
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.last_reference_sources = []  # 同时清空参考链接
+        self.last_gemini_result = None  # 清空分析结果
+        self.last_image_path = None  # 清空图片路径
 
     def get_conversation_history(self) -> List[Dict[str, Any]]:
         """Get current conversation history (for UI display)."""
