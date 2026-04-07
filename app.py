@@ -32,6 +32,9 @@ current_workflow_state = None
 upload_workflow_state = None
 last_extracted_items = []
 agent_instance = None
+last_uploaded_image = None  # 保存用户上传的原图路径
+# 全局聊天历史，避免 Gradio 生成器函数状态同步问题
+_global_chat_history = []
 
 # Initialize GSAM client
 gsam_client = GSAMClient("http://localhost:8000")
@@ -71,6 +74,90 @@ def init_agent(force=False):
             agent_instance.register_tool("segment_clothes", segment_tool)
             agent_instance.register_tool("check_wardrobe_stagnancy", stagnancy_tool)
 
+            # Register Poshmark publish tool - handles actual publishing with confirmation
+            def poshmark_publish_tool(execute: bool = False):
+                """
+                Poshmark发布工具处理器。
+                当Agent检测到用户有明确出售意愿时调用。
+
+                参数:
+                    execute: 只有当用户明确无犹豫地要卖时才为True
+                            如果用户有疑虑（如"不确定价格"、"考虑一下"），Agent不会调用此工具
+                """
+                global upload_workflow_state, last_extracted_items, last_uploaded_image
+
+                if not execute:
+                    # Agent 不应该在 execute=False 时调用此工具
+                    # 这里只是安全兜底
+                    return {
+                        "status": "need_confirm",
+                        "message": "用户需要进一步确认，不应直接执行发布"
+                    }
+
+                if not upload_workflow_state:
+                    return {"status": "error", "message": "没有待处理的衣物，请先上传图片"}
+
+                if upload_workflow_state.get("status") != "awaiting_user_decision":
+                    return {"status": "error", "message": "当前没有等待出售的衣物"}
+
+                try:
+                    # 执行实际发布流程
+                    final_state = resume_workflow(user_approved=True, initial_state=upload_workflow_state)
+
+                    if not final_state:
+                        return {"status": "error", "message": "交易流程执行失败"}
+
+                    item = final_state.get("current_item", {})
+                    price = final_state.get("buyer_offer", {}).get("offer_price", "N/A")
+                    gemini_result = final_state.get("gemini_result", {})
+
+                    # 生成发布模板
+                    listing_template = ""
+                    if agent_instance:
+                        listing_template = agent_instance.generate_listing_template(
+                            gemini_result=gemini_result,
+                            item_name=item.get('name', '美衣'),
+                            price=str(price)
+                        )
+
+                    # 发布到Poshmark
+                    poshmark_result_msg = ""
+                    item_image_path = last_uploaded_image or (last_extracted_items[0].get('image', '') if last_extracted_items else '')
+
+                    if item_image_path and os.path.exists(item_image_path) and agent_instance:
+                        poshmark_result = agent_instance.publish_to_poshmark(
+                            item_image_path=item_image_path,
+                            auto_submit=False
+                        )
+                        poshmark_result_msg = f"\n\n🌐 **Poshmark 发布**\n{poshmark_result}"
+
+                    # 构建完整结果消息
+                    result_message = f"""✨ 太好了主人！
+
+这件**{item.get('name', '美衣')}**已经成功安排出售啦！预估成交价 **¥{price}**～
+
+小镜这就帮您打包发货！📦
+
+{listing_template}
+{poshmark_result_msg}
+
+💡 小镜提示：Poshmark 页面已打开，请确认信息后点击发布！"""
+
+                    return {
+                        "status": "success",
+                        "message": result_message,
+                        "item_name": item.get('name', ''),
+                        "price": price
+                    }
+
+                except Exception as e:
+                    import traceback
+                    error_msg = f"发布过程中出错：{str(e)}"
+                    print(f"[Poshmark Tool Error] {traceback.format_exc()}")
+                    return {"status": "error", "message": error_msg}
+
+            agent_instance.register_tool("publish_to_poshmark", poshmark_publish_tool)
+
         except ValueError as e:
             print(f"Agent init failed: {e}")
             agent_instance = None
@@ -84,32 +171,38 @@ def generate_timestamp():
 
 # ========== Technical Demo Panel Functions ==========
 
-def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
+def process_with_technical_log(image, item_name_prefix, tech_log, _):
     """
     Process image with real-time technical logging for left panel.
     Returns updates for both technical and chat panels.
-    Returns: tech_log, chat_msgs, upper_detection_img, upper_seg_img, lower_detection_img, lower_seg_img, approve_btn, reject_btn
+
+    Uses _global_chat_history to avoid Gradio generator state sync issues.
+
+    Returns: tech_log, chat_history, upper_detection_img, upper_seg_img, lower_detection_img, lower_seg_img
     """
-    global upload_workflow_state, last_extracted_items
+    global upload_workflow_state, last_extracted_items, last_uploaded_image, _global_chat_history
 
     if image is None:
-        return tech_log, chat_history, None, None, None, None, gr.update(), gr.update()
+        yield tech_log, _global_chat_history, None, None, None, None
+        return
 
     logs = []
-    chat_msgs = list(chat_history) if chat_history else []
+    # 关键修复：使用全局变量，确保始终获取最新历史（包括用户在分析期间输入的新消息）
+    chat_msgs = _global_chat_history
+    print(f"[DEBUG] Global chat history length: {len(_global_chat_history)}")
 
     # Step 1: Save and start processing
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📷 接收到主人上传的图片...")
-    yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
-
+    yield "\n".join(logs), chat_msgs, None, None, None, None
     temp_path = f"./temp_upload_{generate_timestamp()}.jpg"
     image.save(temp_path)
+    last_uploaded_image = os.path.abspath(temp_path)  # 保存用户上传的原图路径
     time.sleep(0.3)
 
     # Step 2: GroundingDINO Detection
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 GroundingDINO 检测中...")
     logs.append("  └─ 使用提示词: 'shirt, jacket' / 'pants, shorts'")
-    yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
+    yield "\n".join(logs), chat_msgs, None, None, None, None
     time.sleep(0.8)
 
     # Detection images for display - paired by type
@@ -120,18 +213,16 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
     try:
         # Extract upper body
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✂️ SAM 分割处理上衣...")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
+        yield "\n".join(logs), chat_msgs, None, None, None, None
         upper_images, upper_detection = gsam_client.extract_upper_body(temp_path, white_background=True)
         logs.append(f"  └─ 检测到 {len(upper_images)} 个上衣区域")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
-
+        yield "\n".join(logs), chat_msgs, None, None, None, None
         # Extract lower body
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✂️ SAM 分割处理下装...")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
+        yield "\n".join(logs), chat_msgs, None, None, None, None
         lower_images, lower_detection = gsam_client.extract_lower_body(temp_path, white_background=True)
         logs.append(f"  └─ 检测到 {len(lower_images)} 个下装区域")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
-
+        yield "\n".join(logs), chat_msgs, None, None, None, None
         # Create cropped detection box visualizations for upper and lower
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎨 生成检测框裁剪图...")
         original_img = Image.open(temp_path).convert("RGB")
@@ -200,19 +291,17 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
             detection_path = os.path.abspath(os.path.join(EXTRACTED_DIR, f"detection_{generate_timestamp()}.png"))
             combined_detection.save(detection_path)
 
-        yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None, gr.update(visible=False), gr.update(visible=False)
-
+        yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None
     except Exception as e:
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 错误: {str(e)}")
         import traceback
         logs.append(f"  └─ {traceback.format_exc()[:200]}")
-        yield "\n".join(logs), chat_msgs, None, None, None, None, gr.update(visible=False), gr.update(visible=False)
+        yield "\n".join(logs), chat_msgs, None, None, None, None
         return
 
     # Step 3: Save and register
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💾 保存分割结果...")
-    yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None, gr.update(visible=False), gr.update(visible=False)
-
+    yield "\n".join(logs), chat_msgs, upper_detection_img, None, lower_detection_img, None
     upper_output = None
     lower_output = None
     last_extracted_items = []
@@ -272,8 +361,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
 
     logs.append(f"  └─ 已保存 {len(upper_images) + len(lower_images)} 件衣物")
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 处理完成！")
-    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
-
+    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
     # Step 4: AI Butler takes over - IMMEDIATE RESPONSE
     time.sleep(0.3)
 
@@ -301,8 +389,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
         agent_instance.inject_memory(role="user", content="帮我看看这件衣服能卖多少钱", image_path=item_image)
         agent_instance.inject_memory(role="assistant", content=immediate_response)
 
-    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
-
+    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
     # Step 5: Background Analysis & Pricing (异步分析)
     # 现在运行 VLM + Google Lens 搜索，Agent已经在前面说"正在查了"
     target_item = None
@@ -314,8 +401,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
 
         # Show Gemini analysis in technical log
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 调用 Gemini 3.1 Pro 分析...")
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
-
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
         # Run workflow (Gemini analysis)
         upload_workflow_state = run_upload_workflow_until_user_input(target_item)
 
@@ -350,8 +436,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
             logs.append(f"  └─ Agent 正在生成定价建议...")
         else:
             logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Gemini 分析未返回完整结果")
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
-
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
         # Step 6: Agent 生成自然的定价分析
         time.sleep(0.5)  # 稍微停顿，让"正在分析"的感觉更真实
 
@@ -378,8 +463,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
                 hidden_context=hidden_context
             )
 
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
-
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
         # Step 7: 检查是否闲置，给出出售建议
         time.sleep(0.3)
 
@@ -388,122 +472,65 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_history):
             current_item = upload_workflow_state.get("current_item", target_item)
             item_name = current_item.get("display_name", target_item['name'])
 
-            stagnant_prompt = f"对了主人～ 💡\n\n小镜顺便查了一下，发现这件**{item_name}**已经在您的衣橱中静置**400余天**了...\n\n既然主人平时不怎么穿它，要不要趁现在行情好出手呢？小镜可以帮您发布到二手市场，说不定很快就有人买走啦～✨"
+            stagnant_prompt = f"""对了主人～ 💡
+
+小镜顺便查了一下，发现这件**{item_name}**已经在您的衣橱中静置**400余天**了...
+
+既然主人平时不怎么穿它，要不要趁现在行情好出手呢？小镜可以帮您：
+
+🇨🇳 **闲鱼/小红书** - 国内买家，人民币结算
+🌐 **Poshmark** - 海外买家，美元结算，售价更高哦～
+
+小镜还能帮您自动生成专业的英文发布文案！
+
+💬 主人如果愿意出手，直接回复**"好的"**、**"卖"**或**"发布"**，小镜立刻为您安排！
+
+主人要不要考虑一下？✨"""
             chat_msgs.append({"role": "assistant", "content": stagnant_prompt})
 
             # [新增] 把闲置提示也注入记忆
             if agent_instance:
                 agent_instance.inject_memory(role="assistant", content=stagnant_prompt)
 
-            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=True), gr.update(visible=True)
-
+            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
         elif status == "api_overloaded":
             api_busy_msg = "对了主人～ ⚠️\n\n小镜的AI大脑刚才有点忙，价格分析可能不够完整。主人可以直接问我'这件能卖多少钱'，小镜再帮您查查！"
             chat_msgs.append({"role": "assistant", "content": api_busy_msg})
-            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
-
+            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
     else:
         # No agent or no items extracted
         chat_msgs.append({"role": "user", "content": "[上传了一张穿搭照片]"})
         chat_msgs.append({"role": "assistant", "content": f"已为您提取 {len(upper_images) + len(lower_images)} 件衣物。看起来都是很棒的衣服呢！主人有什么想了解的，随时问我～"})
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output, gr.update(visible=False), gr.update(visible=False)
+        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
 
+def chat_with_butler_stream(message, image_path, _):
+    """Handle text/image chat with AI Butler - streaming version with proper state management.
 
-def approve_sale_from_chat(history):
-    """Handle sale approval from chat."""
-    global upload_workflow_state, agent_instance
-
-    history = list(history) if history else []
-
-    if not upload_workflow_state:
-        history.append({"role": "assistant", "content": "请先上传图片进行处理"})
-        return history, gr.update(visible=False), gr.update(visible=False)
-
-    # Pass the upload workflow state to resume correctly
-    final_state = resume_workflow(user_approved=True, initial_state=upload_workflow_state)
-
-    if not final_state:
-        history.append({"role": "assistant", "content": "交易失败，请重试"})
-        return history, gr.update(visible=False), gr.update(visible=False)
-
-    tracking = final_state.get("tracking_info", {})
-    item = final_state.get("current_item", {})
-    price = final_state.get("buyer_offer", {}).get("offer_price", "N/A")
-
-    # 使用 Agent 生成发布模板 (In-Context Learning)
-    gemini_result = final_state.get("gemini_result", {})
-    listing_template = ""
-    if agent_instance:
-        listing_template = agent_instance.generate_listing_template(
-            gemini_result=gemini_result,
-            item_name=item.get('name', '美衣'),
-            price=str(price)
-        )
-    else:
-        listing_template = "（Agent 未初始化，无法生成发布模板）"
-
-    response = f"""✨ 太好了主人！
-
-这件**{item.get('name', '美衣')}**已经成功安排出售啦！预估成交价 **¥{price}**～
-
-小镜这就帮您打包发货！📦
-
-• 物流：{tracking.get('carrier', '顺丰')}
-• 单号：`{tracking.get('tracking_number', 'SF123456')}`
-• 预计：{tracking.get('estimated_delivery', '3天内送达')}
-
-钱到账了第一时间通知主人！
-
-━━━━━━━━━━━━━━━━━━━━━━━
-
-{listing_template}
-
-━━━━━━━━━━━━━━━━━━━━━━━
-
-💡 小镜提示：复制上方模板到闲鱼/小红书即可发布！需要小镜帮您找新款吗？😊"""
-
-    history.append({"role": "assistant", "content": response})
-    return history, gr.update(visible=False), gr.update(visible=False)
-
-
-def reject_sale_from_chat(history):
-    """Handle sale rejection from chat."""
-    global upload_workflow_state
-
-    history = list(history) if history else []
-
-    if not upload_workflow_state:
-        history.append({"role": "assistant", "content": "已取消"})
-        return history, gr.update(visible=False), gr.update(visible=False)
-
-    # Pass the upload workflow state to resume correctly
-    final_state = resume_workflow(user_approved=False, initial_state=upload_workflow_state)
-    item = upload_workflow_state.get("current_item", {})
-
-    response = f"好的主人～ 💕 这件**{item.get('name', '美衣')}**还是留在您身边吧！说不定哪天主人突然想穿了，它又会成为您的心头好～ 小镜随时待命！"
-
-    history.append({"role": "assistant", "content": response})
-    return history, gr.update(visible=False), gr.update(visible=False)
-
-
-def chat_with_butler_stream(message, image_path, history):
-    """Handle text/image chat with AI Butler - streaming version."""
-    global agent_instance, last_extracted_items, upload_workflow_state
+    Uses _global_chat_history to avoid Gradio generator state sync issues.
+    """
+    global agent_instance, last_extracted_items, upload_workflow_state, _global_chat_history
 
     # Step 1: Show user message immediately
     display_content = message
     if image_path:
         display_content += " [图片]"
 
-    updated_history = list(history) + [{"role": "user", "content": display_content}]
-    yield updated_history, ""
+    # 关键修复：使用全局变量，并追加新消息
+    _global_chat_history.append({"role": "user", "content": display_content})
+
+    # 立即显示用户消息
+    yield _global_chat_history, ""
+
+    # 短暂停顿让 UI 更新
+    import time
+    time.sleep(0.1)
 
     # Step 2: Check if user wants to retry analysis after API overload
     retry_keywords = ["分析", "重新分析", "再试", "重试", "查价格", "定价"]
     if any(kw in message for kw in retry_keywords) and upload_workflow_state:
         if upload_workflow_state.get("status") == "api_overloaded" and last_extracted_items:
-            updated_history.append({"role": "assistant", "content": "小人正在重新分析衣物，请稍候..."})
-            yield updated_history, ""
+            _global_chat_history.append({"role": "assistant", "content": "小人正在重新分析衣物，请稍候..."})
+            yield _global_chat_history, ""
 
             # Re-run workflow for the last item
             target_item = last_extracted_items[-1]
@@ -512,17 +539,18 @@ def chat_with_butler_stream(message, image_path, history):
             if upload_workflow_state.get("status") == "awaiting_user_decision":
                 decision = upload_workflow_state.get("agent_decision", "")
                 sell_prompt = f"主人！小人重新分析完成了！\n\n刚刚为您提取的「{target_item['name']}」：\n\n{decision}\n\n主人是否要为其寻找下一位有缘人？"
-                updated_history[-1] = {"role": "assistant", "content": sell_prompt}
-                yield updated_history, ""
+                # 替换最后的"思考中"消息
+                _global_chat_history[-1] = {"role": "assistant", "content": sell_prompt}
+                yield _global_chat_history, ""
                 return
             elif upload_workflow_state.get("status") == "api_overloaded":
-                updated_history[-1] = {"role": "assistant", "content": "抱歉主人，AI服务仍然繁忙...请稍等1-2分钟后再试，或者小人先为您保留这件衣物？"}
-                yield updated_history, ""
+                _global_chat_history[-1] = {"role": "assistant", "content": "抱歉主人，AI服务仍然繁忙...请稍等1-2分钟后再试，或者小人先为您保留这件衣物？"}
+                yield _global_chat_history, ""
                 return
 
-    # Step 3: Show loading state
-    updated_history.append({"role": "assistant", "content": "小人正在思考..."})
-    yield updated_history, ""
+    # Step 3: Show loading state (用户消息已显示，现在加思考中)
+    _global_chat_history.append({"role": "assistant", "content": "小人正在思考..."})
+    yield _global_chat_history, ""
 
     # Step 4: Initialize agent if needed
     if agent_instance is None:
@@ -530,30 +558,41 @@ def chat_with_butler_stream(message, image_path, history):
 
     if agent_instance is None or agent_instance.client is None:
         # Replace loading with error message
-        updated_history[-1] = {"role": "assistant", "content": "小人目前身体不适（API未配置或无效），无法为主人服务...请设置 MOONSHOT_API_KEY 环境变量。"}
-        yield updated_history, ""
+        _global_chat_history[-1] = {"role": "assistant", "content": "小人目前身体不适（API未配置或无效），无法为主人服务...请设置 MOONSHOT_API_KEY 环境变量。"}
+        yield _global_chat_history, ""
         return
 
     # Step 5: Check if user uploaded a new image
-    # Note: If no new image, agent relies on injected memory from previous interactions
     chat_image_path = image_path
     if chat_image_path and agent_instance:
-        # Save to agent's memory for future tool calls
         agent_instance.last_image_path = chat_image_path
 
-    # Step 6: Get AI response
-    response = agent_instance.chat(message, chat_image_path)
+    # Step 6: Get AI response with history synchronization
+    try:
+        # Sync Gradio history to Agent before chat
+        # 同步时排除最新的用户消息（最后一条是思考中，要排除用户消息和思考中）
+        history_to_sync = _global_chat_history[:-2] if len(_global_chat_history) >= 2 else []
+        agent_instance.sync_history_from_gradio(history_to_sync)
 
-    # Step 7: Show final response
-    updated_history[-1] = {"role": "assistant", "content": response}
-    yield updated_history, ""
+        response = agent_instance.chat(message, chat_image_path)
+
+        # Step 7: Replace "思考中" with actual response
+        _global_chat_history[-1] = {"role": "assistant", "content": response}
+        yield _global_chat_history, ""
+    except Exception as e:
+        # Replace loading message with error
+        error_msg = f"抱歉主人，处理时出了点小问题：{str(e)[:100]}"
+        _global_chat_history[-1] = {"role": "assistant", "content": error_msg}
+        yield _global_chat_history, ""
 
 
 def reset_demo():
     """Reset demo state."""
-    global upload_workflow_state, last_extracted_items
+    global upload_workflow_state, last_extracted_items, last_uploaded_image, _global_chat_history
     upload_workflow_state = None
     last_extracted_items = []
+    last_uploaded_image = None
+    _global_chat_history = []  # 重置全局聊天历史
 
     if agent_instance:
         agent_instance.reset_conversation()
@@ -606,9 +645,7 @@ def reset_demo():
         None,
         None,
         None,
-        None,
-        gr.update(visible=False),
-        gr.update(visible=False)
+        None
     )
 
 
@@ -711,6 +748,9 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
             gr.Markdown("### 💬 AI 时尚管家")
             gr.Markdown("*您的专属AI时尚顾问*")
 
+            # 使用 State 存储聊天历史，避免 Gradio 生成器函数状态同步问题
+            chat_state = gr.State([])
+
             # Chat interface
             chatbot = gr.Chatbot(
                 label="",
@@ -718,21 +758,6 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
                 avatar_images=("👤", "🤵"),
                 show_label=False
             )
-
-            # Quick action buttons
-            with gr.Row():
-                approve_btn = gr.Button(
-                    "✅ 确认出售",
-                    variant="primary",
-                    visible=False,
-                    size="lg"
-                )
-                reject_btn = gr.Button(
-                    "❌ 暂时保留",
-                    variant="secondary",
-                    visible=False,
-                    size="lg"
-                )
 
             # Text input
             with gr.Row():
@@ -748,53 +773,49 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
             reset_btn = gr.Button("🔄 重新开始", size="sm")
 
     # Event handlers
+    # 关键修复：使用 chat_state 作为输入/输出，而不是 chatbot
+    # 这样避免 Gradio 生成器函数状态同步问题
     process_btn.click(
         fn=process_with_technical_log,
-        inputs=[upload_image, item_prefix, tech_log, chatbot],
-        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn],
+        inputs=[upload_image, item_prefix, tech_log, chat_state],
+        outputs=[tech_log, chat_state, upper_detection_result, upper_result, lower_detection_result, lower_result],
         show_progress=True
     )
-
-    approve_btn.click(
-        fn=approve_sale_from_chat,
-        inputs=[chatbot],
-        outputs=[chatbot, approve_btn, reject_btn]
+    # 使用 gr.State 变化触发 chatbot 更新
+    chat_state.change(
+        fn=lambda x: x,
+        inputs=[chat_state],
+        outputs=[chatbot]
     )
 
-    reject_btn.click(
-        fn=reject_sale_from_chat,
-        inputs=[chatbot],
-        outputs=[chatbot, approve_btn, reject_btn]
-    )
 
-    def on_send_stream(msg, hist):
+    def on_send_stream(msg, _):
         if not msg or not msg.strip():
-            yield hist, ""
+            yield _global_chat_history, ""
             return
-        # Clear input immediately
-        yield from chat_with_butler_stream(msg, None, hist)
+        yield from chat_with_butler_stream(msg, None, None)
 
     send_btn.click(
         fn=on_send_stream,
-        inputs=[msg_input, chatbot],
+        inputs=[msg_input, chat_state],
         outputs=[chatbot, msg_input],
         show_progress="hidden"
     )
 
     msg_input.submit(
         fn=on_send_stream,
-        inputs=[msg_input, chatbot],
+        inputs=[msg_input, chat_state],
         outputs=[chatbot, msg_input],
         show_progress="hidden"
     )
 
     reset_btn.click(
         fn=reset_demo,
-        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn]
+        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result]
     )
 
     # Auto-reset on load
-    demo.load(reset_demo, outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result, approve_btn, reject_btn])
+    demo.load(reset_demo, outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result])
 
 if __name__ == "__main__":
     demo.launch(

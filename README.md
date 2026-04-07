@@ -1,6 +1,6 @@
 # 🤵 AI 时尚管家 · FashionClaw
 
-智能服装管理助手 —— 上传穿搭照片，AI 自动识别品牌、估价、建议出售。
+智能服装管理助手 —— 上传穿搭照片，AI 自动识别品牌、估价、一键发布到 Poshmark 出售。
 
 ## ✨ 核心功能
 
@@ -8,12 +8,13 @@
 - 🧠 **品牌识别**：Gemini 3.1 Pro 直接识别品牌、型号、货号
 - 💰 **智能估价**：官方指导价 + 二手市场建议售价
 - 🤖 **AI 管家**：自然语言交互，像真人管家一样贴心
+- 🌐 **一键发布**：Agent 智能识别出售意图，自动填写 Poshmark 表单
 
 ## 🚀 快速开始
 
 ### 环境要求
 - Python 3.10+
-- GroundingDINO + SAM 服务（本地端口 8000）
+- GroundingDINO + SAM 服务（本地或远程）
 
 ### 安装
 ```bash
@@ -32,10 +33,86 @@ MOONSHOT_API_KEY=your_kimi_api_key
 
 获取 Gemini API Key：[Google AI Studio](https://aistudio.google.com/app/apikey)
 
+### 部署 GroundingDINO + SAM 服务（必需）
+
+本项目需要 GroundingDINO + SAM 服务进行图像分割。如果**没有 GPU**或**不想部署**，可选择以下方式：
+
+#### 快速开始（推荐无 GPU 用户）
+
+**使用预配置的远程服务器**（通过 SSH 隧道）：
+
+```bash
+# 建立 SSH 隧道，连接我们预配置的服务器
+# 联系项目维护者获取服务器地址和账号
+ssh -L 8000:localhost:8000 username@demo-server.fashionclaw.ai
+```
+
+#### 选项 1：自己部署（推荐有 GPU 的用户）
+
+**硬件要求：**
+- NVIDIA GPU 8GB+ 显存
+- CUDA 11.8+
+- Python 3.10+
+
+```bash
+# 克隆 GSAM 服务仓库
+git clone https://github.com/IDEA-Research/Grounded-Segment-Anything.git
+cd Grounded-Segment-Anything
+
+# 安装依赖
+pip install -e segment_anything
+pip install -e GroundingDINO
+pip install diffusers transformers accelerate opencv-python
+
+# 下载模型权重
+mkdir -p weights
+cd weights
+wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0/groundingdino_swint_ogc.pth
+wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
+cd ..
+
+# 启动服务
+python gradio_app.py --listen 0.0.0.0 --port 8000
+```
+
+**详细部署文档：** [GSAM 官方文档](https://github.com/IDEA-Research/Grounded-Segment-Anything)
+
+#### 选项 2：Docker 部署
+
+```bash
+# 拉取预构建镜像
+docker pull andyzhaoly/fashionclaw-gsam:latest
+
+# 运行容器
+docker run -d \
+  --name fashionclaw-gsam \
+  --gpus all \
+  -p 8000:8000 \
+  andyzhaoly/fashionclaw-gsam:latest
+```
+
+#### 选项 3：跳过图像分割（极简体验）
+
+如果暂时不需要分割功能，可以修改 `app.py` 直接使用原图：
+
+```python
+# app.py 中注释掉以下代码，直接返回原图
+# upper_images, upper_detection = gsam_client.extract_upper_body(...)
+# lower_images, lower_detection = gsam_client.extract_lower_body(...)
+
+# 改为：
+upper_images = [image]
+lower_images = []
+```
+
+> ⚠️ **注意：** 此模式下 Gemini 会直接分析完整图片，可能不如分割后的单件衣物识别准确。
+
 ### 运行
 ```bash
-# 启动 GroundingDINO + SAM 服务（需单独部署）
-# 然后运行主应用
+# 确保 GSAM 服务可访问（本地或远程隧道）
+# 默认连接 http://localhost:8000
+
+# 启动主应用
 python app.py
 ```
 
@@ -55,9 +132,15 @@ Gemini 3.1 Pro 视觉分析
     ├── 官方指导价
     └── 二手估价建议
     ↓
-AI Agent（Kimi）生成自然语言回复
+AI Agent（Gemini 3.1 Flash-Lite）生成自然语言回复
     ↓
-Gradio 界面展示
+├─→ 自然语言对话（右侧 Chatbot）
+│
+└─→ Function Calling 检测出售意图
+        ↓
+    Playwright 自动填写 Poshmark 表单
+        ↓
+    浏览器窗口显示，等待确认发布
 ```
 
 ## 📁 项目结构
@@ -66,13 +149,15 @@ Gradio 界面展示
 .
 ├── app.py                  # Gradio 主应用
 ├── workflow.py             # LangGraph 工作流编排
-├── mirror_agent.py         # AI Agent（对话生成）
+├── mirror_agent.py         # AI Agent（对话生成 + Function Calling）
 ├── database.json           # 衣橱数据库
 ├── requirements.txt        # Python 依赖
 ├── .env                    # API Keys（用户自备）
 ├── tools/
 │   ├── gemini_analyzer.py  # Gemini 3.1 Pro 分析模块
-│   └── pricing_tool.py     # 定价工具（主入口）
+│   ├── pricing_tool.py     # 定价工具（主入口）
+│   └── poshmark_bot.py     # Playwright 自动化发布
+├── poshmark_browser_data/  # Poshmark 登录状态（自动创建）
 └── extracted_clothes/      # 提取的衣物图片（运行时生成）
 ```
 
@@ -81,10 +166,12 @@ Gradio 界面展示
 | 组件 | 用途 | 版本 |
 |------|------|------|
 | **Gemini 3.1 Pro** | 视觉识别品牌、型号、价格 | `gemini-3.1-pro-preview` |
+| **Gemini 3.1 Flash-Lite** | AI Agent 对话生成 | `gemini-3.1-flash-lite-preview` |
 | **GroundingDINO** | 目标检测 | - |
 | **SAM** | 图像分割 | - |
-| **Kimi** | AI Agent 对话生成 | `kimi-k2.5` |
 | **Gradio** | Web 界面 | 4.x |
+| **Playwright** | 浏览器自动化（Poshmark）| - |
+| **Function Calling** | 智能识别出售意图 | OpenAI Compatible |
 
 ## 💡 使用示例
 
@@ -105,6 +192,36 @@ Gradio 界面展示
 
 小镜建议定价 ¥30000 左右～
 ```
+
+## 🔧 配置说明
+
+### GroundingDINO + SAM 服务
+
+默认连接本地 `http://localhost:8000`。如需使用远程服务：
+
+**方法 1：修改代码**（`app.py`）
+```python
+gsam_client = GSAMClient("http://your-remote-server:8000")
+```
+
+**方法 2：SSH 隧道**（推荐，安全连接远程服务）
+```bash
+# 在本地建立隧道，将远程 8000 端口映射到本地
+ssh -L 8000:localhost:8000 user@remote-server
+```
+
+或使用 `autossh` 保持连接：
+```bash
+autossh -M 0 -N -L 8000:localhost:8000 user@remote-server
+```
+
+### Poshmark 自动化
+
+首次使用需要登录 Poshmark：
+```bash
+python tools/poshmark_bot.py
+```
+在打开的浏览器中完成登录，之后会话会保存在 `poshmark_browser_data/` 目录。
 
 ## 🔧 开发说明
 
