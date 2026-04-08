@@ -172,6 +172,58 @@ AI Agent（Gemini 3.1 Flash-Lite）生成自然语言回复
 | **Gradio** | Web 界面 | 4.x |
 | **Playwright** | 浏览器自动化（Poshmark）| - |
 | **Function Calling** | 智能识别出售意图 | OpenAI Compatible |
+| **IDM-VTON** | 虚拟试穿服务 | Port 8001 |
+
+## 🎮 测试 Agent 推荐+虚拟试穿工作流
+
+### 1. 启动 IDM-VTON 服务（需要conda环境）
+
+```bash
+# 激活IDM-VTON的conda环境
+conda activate idm
+
+# 启动IDM-VTON服务（端口8001）
+cd /home/zhaoliyang/ai-mirror-demo
+python idm_vton_service.py
+```
+
+### 2. 启动主应用（另一个终端）
+
+```bash
+cd /home/zhaoliyang/ai-mirror-demo
+
+# 设置环境变量（如需要）
+export IDM_VTON_SERVICE_URL=http://localhost:8001
+export GEMINI_API_KEY=your_key  # 可选，用于AI对话
+
+# 启动主应用
+python app.py
+```
+
+### 3. 测试工作流
+
+1. **打开浏览器**访问 `http://localhost:7860`
+
+2. **测试推荐功能**：
+   - 在右侧聊天框输入："小镜，给我推荐几件衣服"
+   - Agent应该调用 `get_clothing_recommendations` 工具
+   - 返回推荐列表（带ID，如 `sample_001`）
+
+3. **测试选择**：
+   - 回复："第1件" 或 "sample_001"
+   - Agent应该询问是否要试穿
+
+4. **测试虚拟试穿触发**：
+   - 回复："试试" 或 "好"
+   - Agent应该调用 `trigger_virtual_tryon` 工具
+   - 提示需要上传人像照片
+
+5. **手动虚拟试穿**：
+   - 滚动到页面下方 **"👗 虚拟试穿"** 区域
+   - 在 **"📷 人物照片"** 上传你的人像照片
+   - 在 **"👕 选择衣物"** 下拉框选择衣服（或上传自定义衣物）
+   - 点击 **"✨ 开始试衣"**
+   - 查看生成结果
 
 ## 💡 使用示例
 

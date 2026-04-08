@@ -26,6 +26,7 @@ from database_manager import (
 )
 from gsam_client import GSAMClient, draw_detection_boxes
 from mirror_agent import MirrorAgent, create_agent
+from idm_vton_client import IDMVTONClient
 
 # Global state
 current_workflow_state = None
@@ -33,29 +34,16 @@ upload_workflow_state = None
 last_extracted_items = []
 agent_instance = None
 last_uploaded_image = None  # 保存用户上传的原图路径
-# 全局聊天历史，避免 Gradio 生成器函数状态同步问题
-_global_chat_history = []
 
 # Initialize GSAM client
 gsam_client = GSAMClient("http://localhost:8000")
 
+# Initialize IDM-VTON client
+idm_vton_client = IDMVTONClient("http://localhost:8001")
+
 # Storage directory
 EXTRACTED_DIR = "./extracted_clothes"
 os.makedirs(EXTRACTED_DIR, exist_ok=True)
-
-# Demo database
-INITIAL_DATABASE = {
-    "wardrobe": [
-        {"item_id": "001", "name": "Blue Denim Jacket", "last_worn_days_ago": 45, "status": "in_closet", "original_price": 299, "image": "images/denim_jacket.jpg"},
-        {"item_id": "002", "name": "Red Summer Dress", "last_worn_days_ago": 420, "status": "in_closet", "original_price": 189, "image": "images/red_dress.jpg"},
-        {"item_id": "003", "name": "Vintage Wool Sweater", "last_worn_days_ago": 500, "status": "in_closet", "original_price": 350, "image": "images/wool_sweater.jpg"},
-        {"item_id": "004", "name": "Brown Leather Belt", "last_worn_days_ago": 380, "status": "in_closet", "original_price": 89, "image": "images/leather_belt.jpg"},
-        {"item_id": "005", "name": "Black Slim Trousers", "last_worn_days_ago": 120, "status": "in_closet", "original_price": 259, "image": "images/black_trousers.jpg"},
-        {"item_id": "006", "name": "White Linen Shirt", "last_worn_days_ago": 15, "status": "in_closet", "original_price": 179, "image": "images/white_shirt.jpg"},
-        {"item_id": "007", "name": "Green Bomber Jacket", "last_worn_days_ago": 200, "status": "in_closet", "original_price": 499, "image": "images/green_bomber.jpg"},
-    ]
-}
-
 
 def init_agent(force=False):
     """Initialize the AI Butler agent."""
@@ -158,10 +146,76 @@ def init_agent(force=False):
 
             agent_instance.register_tool("publish_to_poshmark", poshmark_publish_tool)
 
+            # Register recommendation tool
+            def get_recommendations_tool(category: str = None, style: str = None, limit: int = 4):
+                """Get clothing recommendations from sample clothes."""
+                from recommendations import get_recommendations, format_recommendation_for_agent, get_recommendation_image_paths
+                
+                items = get_recommendations(
+                    category=category,
+                    style=style,
+                    limit=limit
+                )
+                
+                # Store for later use (e.g., displaying images)
+                global current_recommendations
+                current_recommendations = items
+                
+                # Get image paths for UI display
+                image_paths = get_recommendation_image_paths(items)
+                
+                # Format text for agent
+                text = format_recommendation_for_agent(items)
+                
+                return {
+                    "status": "success",
+                    "recommendations": [item.to_dict() for item in items],
+                    "image_paths": image_paths,
+                    "message": text
+                }
+            
+            agent_instance.register_tool("get_clothing_recommendations", get_recommendations_tool)
+            
+            # Register virtual try-on tool
+            def trigger_virtual_tryon_tool(item_id: str, preserve_face: bool = True):
+                """Trigger virtual try-on for selected item."""
+                global current_recommendations, pending_tryon_item, last_user_person_image
+                
+                # Find the selected item
+                from recommendations import get_item_by_id
+                
+                # Find the selected item using unified lookup
+                selected_item = get_item_by_id(item_id)
+                
+                if not selected_item:
+                    return {
+                        "status": "error",
+                        "message": "抱歉主人，小镜没找到这件衣服呢，请重新选择～"
+                    }
+                
+                # Check if user has uploaded a person image
+                # Note: In actual implementation, this would be checked against the stored user image
+                pending_tryon_item = selected_item
+                
+                return {
+                    "status": "success",
+                    "message": f"已选中 **{selected_item.name}** 准备试穿！小镜需要主人的人像照片作为试穿基础图，请上传照片后点击虚拟试穿～",
+                    "item": selected_item.to_dict(),
+                    "needs_person_image": True
+                }
+            
+            agent_instance.register_tool("trigger_virtual_tryon", trigger_virtual_tryon_tool)
+
         except ValueError as e:
             print(f"Agent init failed: {e}")
             agent_instance = None
     return agent_instance
+
+
+# Global state for recommendation workflow
+current_recommendations = []  # Current recommendation items
+pending_tryon_item = None     # Item selected for try-on
+last_user_person_image = None # User's uploaded person image for try-on base
 
 
 def generate_timestamp():
@@ -171,25 +225,29 @@ def generate_timestamp():
 
 # ========== Technical Demo Panel Functions ==========
 
-def process_with_technical_log(image, item_name_prefix, tech_log, _):
+def process_with_technical_log(image, item_name_prefix, tech_log, chat_state):
     """
     Process image with real-time technical logging for left panel.
     Returns updates for both technical and chat panels.
 
-    Uses _global_chat_history to avoid Gradio generator state sync issues.
+    Uses gr.State() for chat state management.
 
-    Returns: tech_log, chat_history, upper_detection_img, upper_seg_img, lower_detection_img, lower_seg_img
+    Returns: tech_log, chat_state, upper_detection_img, upper_seg_img, lower_detection_img, lower_seg_img
     """
-    global upload_workflow_state, last_extracted_items, last_uploaded_image, _global_chat_history
+    global upload_workflow_state, last_extracted_items, last_uploaded_image
+
+    # Initialize chat_state if None
+    if chat_state is None:
+        chat_state = []
 
     if image is None:
-        yield tech_log, _global_chat_history, None, None, None, None
+        yield tech_log, chat_state, None, None, None, None
         return
 
     logs = []
-    # 关键修复：使用全局变量，确保始终获取最新历史（包括用户在分析期间输入的新消息）
-    chat_msgs = _global_chat_history
-    print(f"[DEBUG] Global chat history length: {len(_global_chat_history)}")
+    # Use the passed-in state
+    chat_msgs = chat_state
+    print(f"[DEBUG] Chat state length: {len(chat_state)}")
 
     # Step 1: Save and start processing
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📷 接收到主人上传的图片...")
@@ -389,7 +447,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, _):
         agent_instance.inject_memory(role="user", content="帮我看看这件衣服能卖多少钱", image_path=item_image)
         agent_instance.inject_memory(role="assistant", content=immediate_response)
 
-    yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
+    yield "\n".join(logs), chat_state, upper_detection_img, upper_output, lower_detection_img, lower_output
     # Step 5: Background Analysis & Pricing (异步分析)
     # 现在运行 VLM + Google Lens 搜索，Agent已经在前面说"正在查了"
     target_item = None
@@ -463,7 +521,7 @@ def process_with_technical_log(image, item_name_prefix, tech_log, _):
                 hidden_context=hidden_context
             )
 
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
+        yield "\n".join(logs), chat_state, upper_detection_img, upper_output, lower_detection_img, lower_output
         # Step 7: 检查是否闲置，给出出售建议
         time.sleep(0.3)
 
@@ -492,34 +550,38 @@ def process_with_technical_log(image, item_name_prefix, tech_log, _):
             if agent_instance:
                 agent_instance.inject_memory(role="assistant", content=stagnant_prompt)
 
-            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
+            yield "\n".join(logs), chat_state, upper_detection_img, upper_output, lower_detection_img, lower_output
         elif status == "api_overloaded":
             api_busy_msg = "对了主人～ ⚠️\n\n小镜的AI大脑刚才有点忙，价格分析可能不够完整。主人可以直接问我'这件能卖多少钱'，小镜再帮您查查！"
             chat_msgs.append({"role": "assistant", "content": api_busy_msg})
-            yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
+            yield "\n".join(logs), chat_state, upper_detection_img, upper_output, lower_detection_img, lower_output
     else:
         # No agent or no items extracted
         chat_msgs.append({"role": "user", "content": "[上传了一张穿搭照片]"})
         chat_msgs.append({"role": "assistant", "content": f"已为您提取 {len(upper_images) + len(lower_images)} 件衣物。看起来都是很棒的衣服呢！主人有什么想了解的，随时问我～"})
-        yield "\n".join(logs), chat_msgs, upper_detection_img, upper_output, lower_detection_img, lower_output
+        yield "\n".join(logs), chat_state, upper_detection_img, upper_output, lower_detection_img, lower_output
 
-def chat_with_butler_stream(message, image_path, _):
+def chat_with_butler_stream(message, image_path, chat_state):
     """Handle text/image chat with AI Butler - streaming version with proper state management.
 
-    Uses _global_chat_history to avoid Gradio generator state sync issues.
+    Uses gr.State() for chat state management.
     """
-    global agent_instance, last_extracted_items, upload_workflow_state, _global_chat_history
+    global agent_instance, last_extracted_items, upload_workflow_state
+
+    # Initialize chat_state if None
+    if chat_state is None:
+        chat_state = []
 
     # Step 1: Show user message immediately
     display_content = message
     if image_path:
         display_content += " [图片]"
 
-    # 关键修复：使用全局变量，并追加新消息
-    _global_chat_history.append({"role": "user", "content": display_content})
+    # Append new message to state
+    chat_state.append({"role": "user", "content": display_content})
 
     # 立即显示用户消息
-    yield _global_chat_history, ""
+    yield chat_state, ""
 
     # 短暂停顿让 UI 更新
     import time
@@ -529,8 +591,8 @@ def chat_with_butler_stream(message, image_path, _):
     retry_keywords = ["分析", "重新分析", "再试", "重试", "查价格", "定价"]
     if any(kw in message for kw in retry_keywords) and upload_workflow_state:
         if upload_workflow_state.get("status") == "api_overloaded" and last_extracted_items:
-            _global_chat_history.append({"role": "assistant", "content": "小人正在重新分析衣物，请稍候..."})
-            yield _global_chat_history, ""
+            chat_state.append({"role": "assistant", "content": "小人正在重新分析衣物，请稍候..."})
+            yield chat_state, ""
 
             # Re-run workflow for the last item
             target_item = last_extracted_items[-1]
@@ -540,17 +602,17 @@ def chat_with_butler_stream(message, image_path, _):
                 decision = upload_workflow_state.get("agent_decision", "")
                 sell_prompt = f"主人！小人重新分析完成了！\n\n刚刚为您提取的「{target_item['name']}」：\n\n{decision}\n\n主人是否要为其寻找下一位有缘人？"
                 # 替换最后的"思考中"消息
-                _global_chat_history[-1] = {"role": "assistant", "content": sell_prompt}
-                yield _global_chat_history, ""
+                chat_state[-1] = {"role": "assistant", "content": sell_prompt}
+                yield chat_state, ""
                 return
             elif upload_workflow_state.get("status") == "api_overloaded":
-                _global_chat_history[-1] = {"role": "assistant", "content": "抱歉主人，AI服务仍然繁忙...请稍等1-2分钟后再试，或者小人先为您保留这件衣物？"}
-                yield _global_chat_history, ""
+                chat_state[-1] = {"role": "assistant", "content": "抱歉主人，AI服务仍然繁忙...请稍等1-2分钟后再试，或者小人先为您保留这件衣物？"}
+                yield chat_state, ""
                 return
 
     # Step 3: Show loading state (用户消息已显示，现在加思考中)
-    _global_chat_history.append({"role": "assistant", "content": "小人正在思考..."})
-    yield _global_chat_history, ""
+    chat_state.append({"role": "assistant", "content": "小人正在思考..."})
+    yield chat_state, ""
 
     # Step 4: Initialize agent if needed
     if agent_instance is None:
@@ -558,8 +620,8 @@ def chat_with_butler_stream(message, image_path, _):
 
     if agent_instance is None or agent_instance.client is None:
         # Replace loading with error message
-        _global_chat_history[-1] = {"role": "assistant", "content": "小人目前身体不适（API未配置或无效），无法为主人服务...请设置 MOONSHOT_API_KEY 环境变量。"}
-        yield _global_chat_history, ""
+        chat_state[-1] = {"role": "assistant", "content": "小人目前身体不适（API未配置或无效），无法为主人服务...请设置 MOONSHOT_API_KEY 环境变量。"}
+        yield chat_state, ""
         return
 
     # Step 5: Check if user uploaded a new image
@@ -570,37 +632,46 @@ def chat_with_butler_stream(message, image_path, _):
     # Step 6: Get AI response with history synchronization
     try:
         # Sync Gradio history to Agent before chat
-        # 同步时排除最新的用户消息（最后一条是思考中，要排除用户消息和思考中）
-        history_to_sync = _global_chat_history[:-2] if len(_global_chat_history) >= 2 else []
+        # Bug fix: Use robust filtering instead of hardcoded slicing
+        # Filter out incomplete states: messages with "小人正在思考..." or pending user messages
+        def is_complete_message(msg):
+            if not isinstance(msg, dict):
+                return False
+            content = msg.get("content", "")
+            # Exclude "thinking" messages and incomplete states
+            if content == "小人正在思考...":
+                return False
+            return True
+        
+        history_to_sync = [msg for msg in chat_state if is_complete_message(msg)]
         agent_instance.sync_history_from_gradio(history_to_sync)
 
         response = agent_instance.chat(message, chat_image_path)
 
         # Step 7: Replace "思考中" with actual response
-        _global_chat_history[-1] = {"role": "assistant", "content": response}
-        yield _global_chat_history, ""
+        chat_state[-1] = {"role": "assistant", "content": response}
+        yield chat_state, ""
     except Exception as e:
         # Replace loading message with error
         error_msg = f"抱歉主人，处理时出了点小问题：{str(e)[:100]}"
-        _global_chat_history[-1] = {"role": "assistant", "content": error_msg}
-        yield _global_chat_history, ""
+        chat_state[-1] = {"role": "assistant", "content": error_msg}
+        yield chat_state, ""
 
 
 def reset_demo():
     """Reset demo state."""
-    global upload_workflow_state, last_extracted_items, last_uploaded_image, _global_chat_history
+    global upload_workflow_state, last_extracted_items, last_uploaded_image
     upload_workflow_state = None
     last_extracted_items = []
     last_uploaded_image = None
-    _global_chat_history = []  # 重置全局聊天历史
 
     if agent_instance:
         agent_instance.reset_conversation()
 
-    # Reset database
+    # Reset database (empty)
     try:
         with open("database.json", "w", encoding="utf-8") as f:
-            json.dump(INITIAL_DATABASE, f, ensure_ascii=False, indent=2)
+            json.dump({"wardrobe": []}, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"Warning: failed to reset database: {e}")
 
@@ -641,7 +712,7 @@ def reset_demo():
 
     return (
         "等待主人上传...",
-        [],
+        [],  # Reset chat_state to empty list
         None,
         None,
         None,
@@ -649,12 +720,108 @@ def reset_demo():
     )
 
 
+# ========== IDM-VTON Virtual Try-On Functions ==========
+
+def get_extracted_clothes():
+    """Get list of extracted clothes for dropdown selection."""
+    clothes_list = []
+    try:
+        import glob
+        image_extensions = ['*.png', '*.jpg', '*.jpeg']
+        for ext in image_extensions:
+            for f in sorted(glob.glob(f"{EXTRACTED_DIR}/{ext}")):
+                filename = os.path.basename(f)
+                # Skip detection files and temp files
+                if 'detection' not in filename and not filename.startswith('.'):
+                    clothes_list.append((filename, os.path.abspath(f)))
+    except Exception as e:
+        print(f"[get_extracted_clothes] Error: {e}")
+    return clothes_list
+
+
+def virtual_try_on_handler(person_image, clothes_image_path, prompt, steps, guidance, seed, preserve_face=True):
+    """
+    Handler for virtual try-on.
+    
+    Args:
+        person_image: PIL Image of the person (from webcam or upload)
+        clothes_image_path: Path to the clothes image (str path or PIL Image)
+        prompt: Text prompt
+        steps: Number of inference steps
+        guidance: Guidance scale
+        seed: Random seed
+        preserve_face: Whether to preserve the original face
+    
+    Returns:
+        Tuple of (result_image, status_message)
+    """
+    global last_uploaded_image
+    
+    # If no person_image provided, try to use the last uploaded image from GSAM
+    if person_image is None:
+        if last_uploaded_image and os.path.exists(last_uploaded_image):
+            try:
+                person_image = Image.open(last_uploaded_image).convert("RGB")
+                print(f"[VTON] Using last uploaded image as person base: {last_uploaded_image}")
+            except Exception as e:
+                print(f"[VTON] Failed to load last uploaded image: {e}")
+                return None, "❌ 请上传人物照片（或先使用左侧分割功能上传照片）"
+        else:
+            return None, "❌ 请上传人物照片（或先使用左侧分割功能上传照片）"
+    
+    if not clothes_image_path:
+        return None, "❌ 请选择要试穿的衣服"
+    
+    if not idm_vton_client.available:
+        return None, "❌ IDM-VTON 服务不可用，请先启动服务：python idm_vton_service.py"
+    
+    try:
+        # Convert PIL to the format expected by client
+        # The client has try_on_images method that accepts PIL images directly
+        # Bug fix: Handle both string path and PIL Image
+        if isinstance(clothes_image_path, str):
+            clothes_image = Image.open(clothes_image_path).convert("RGB")
+        else:
+            # Assume it's a PIL Image
+            clothes_image = clothes_image_path.convert("RGB")
+        
+        # Resize images to appropriate size
+        person_image = person_image.convert("RGB")
+        
+        # Run virtual try-on
+        result_image = idm_vton_client.try_on_images(
+            person_image=person_image,
+            clothes_image=clothes_image,
+            prompt=prompt,
+            num_inference_steps=steps,
+            guidance_scale=guidance,
+            seed=seed,
+            preserve_face=preserve_face,
+        )
+        
+        face_msg = " (已保留原脸)" if preserve_face else ""
+        return result_image, f"✅ 虚拟试衣完成！{face_msg}"
+        
+    except Exception as e:
+        import traceback
+        error_msg = f"❌ 试衣失败: {str(e)}"
+        print(traceback.format_exc())
+        return None, error_msg
+
+
+def refresh_clothes_list():
+    """Refresh the clothes dropdown list."""
+    clothes = get_extracted_clothes()
+    choices = [("-- 请选择 --", "")] + clothes
+    return gr.Dropdown(choices=choices, value="")
+
+
 # ========== Gradio UI ==========
 
 with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
     gr.Markdown("""
     # 🤵 AI 时尚管家 · FashionClaw
-    ### 您的专属AI时尚顾问 · 实时抠图 + 智能断舍离
+    ### 您的专属AI时尚顾问 · 实时抠图 + 智能断舍离 + 虚拟试衣
     """)
 
     # Initialize agent on load
@@ -789,33 +956,143 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
     )
 
 
-    def on_send_stream(msg, _):
+    def on_send_stream(msg, chat_state):
         if not msg or not msg.strip():
-            yield _global_chat_history, ""
+            yield chat_state, ""
             return
-        yield from chat_with_butler_stream(msg, None, None)
+        yield from chat_with_butler_stream(msg, None, chat_state)
 
     send_btn.click(
         fn=on_send_stream,
         inputs=[msg_input, chat_state],
-        outputs=[chatbot, msg_input],
+        outputs=[chat_state, msg_input],
         show_progress="hidden"
     )
 
     msg_input.submit(
         fn=on_send_stream,
         inputs=[msg_input, chat_state],
-        outputs=[chatbot, msg_input],
+        outputs=[chat_state, msg_input],
         show_progress="hidden"
     )
 
     reset_btn.click(
         fn=reset_demo,
-        outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result]
+        outputs=[tech_log, chat_state, upper_detection_result, upper_result, lower_detection_result, lower_result]
     )
 
     # Auto-reset on load
-    demo.load(reset_demo, outputs=[tech_log, chatbot, upper_detection_result, upper_result, lower_detection_result, lower_result])
+    demo.load(reset_demo, outputs=[tech_log, chat_state, upper_detection_result, upper_result, lower_detection_result, lower_result])
+
+    # ========== IDM-VTON Virtual Try-On Section ==========
+    gr.Markdown("---")
+    gr.Markdown("### 👗 虚拟试衣 (IDM-VTON)")
+    gr.Markdown("*上传人物照片，选择衣物，AI 生成试穿效果*")
+
+    with gr.Row():
+        # Left: Inputs
+        with gr.Column(scale=1):
+            gr.Markdown("#### 📷 人物照片")
+            vton_person_image = gr.Image(
+                type="pil",
+                label="上传或拍摄人物照片（留空则使用左侧上传的照片）",
+                sources=["upload", "webcam"]
+            )
+
+            gr.Markdown("#### 👕 选择衣物")
+            # Dropdown for extracted clothes
+            clothes_dropdown = gr.Dropdown(
+                choices=[("-- 请选择 --", "")],
+                value="",
+                label="从已提取的衣物中选择",
+                interactive=True
+            )
+            refresh_btn = gr.Button("🔄 刷新衣物列表", size="sm")
+
+            # Or upload custom clothes
+            gr.Markdown("*或上传自定义衣物照片*")
+            vton_clothes_image = gr.Image(
+                type="pil",
+                label="上传衣物照片（可选）",
+                sources=["upload"]
+            )
+
+            gr.Markdown("#### ⚙️ 高级参数")
+            with gr.Accordion("调整生成参数", open=False):
+                vton_prompt = gr.Textbox(
+                    label="提示词",
+                    value="a photo of a person wearing clothes",
+                    placeholder="描述想要的效果"
+                )
+                vton_steps = gr.Slider(
+                    label="推理步数",
+                    minimum=10,
+                    maximum=50,
+                    value=30,
+                    step=1
+                )
+                vton_guidance = gr.Slider(
+                    label="引导系数",
+                    minimum=1.0,
+                    maximum=5.0,
+                    value=2.0,
+                    step=0.1
+                )
+                vton_seed = gr.Number(
+                    label="随机种子",
+                    value=42,
+                    precision=0
+                )
+                vton_preserve_face = gr.Checkbox(
+                    label="保留原脸 (Face Preservation)",
+                    value=True,
+                    info="使用SCHP模型提取脸部并拼回生成结果"
+                )
+
+            vton_btn = gr.Button("✨ 开始试衣", variant="primary", size="lg")
+
+        # Right: Result
+        with gr.Column(scale=1):
+            gr.Markdown("#### 🎨 试穿结果")
+            vton_result = gr.Image(
+                type="pil",
+                label="生成结果",
+                interactive=False,
+                height=600
+            )
+            vton_status = gr.Textbox(
+                label="状态",
+                value="等待开始...",
+                interactive=False
+            )
+
+    # Event handlers for Virtual Try-On
+    refresh_btn.click(
+        fn=refresh_clothes_list,
+        outputs=[clothes_dropdown]
+    )
+
+    def handle_vton(person_img, clothes_path, clothes_img, prompt, steps, guidance, seed, preserve_face):
+        """Handle virtual try-on with priority to uploaded clothes image."""
+        # Use uploaded clothes image if available, otherwise use dropdown selection
+        clothes_source = clothes_img if clothes_img is not None else clothes_path
+        return virtual_try_on_handler(person_img, clothes_source, prompt, steps, guidance, seed, preserve_face)
+
+    vton_btn.click(
+        fn=handle_vton,
+        inputs=[
+            vton_person_image,
+            clothes_dropdown,
+            vton_clothes_image,
+            vton_prompt,
+            vton_steps,
+            vton_guidance,
+            vton_seed,
+            vton_preserve_face
+        ],
+        outputs=[vton_result, vton_status],
+        show_progress=True
+    )
 
 if __name__ == "__main__":
     demo.launch(

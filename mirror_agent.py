@@ -58,15 +58,46 @@ SYSTEM_PROMPT = """
 - 主人要留着 → “主人的眼光独到，今天又get到了美美新衣”
 
 5.【出售意图判断 - 多轮确认】
-- 用户表达有疑虑的出售意向（如”我想卖，但不确定价格”、”考虑一下”、”再想想”、”价格合适就卖”）→ **不要调用工具**，用自然语言回复讨论价格和细节
-- 用户明确无犹豫地说出售（如”卖了吧”、”确定出售”、”帮我挂到Poshmark”、”出掉”）→ 调用 publish_to_poshmark(execute=true)
+- 用户表达有疑虑的出售意向（如"我想卖，但不确定价格"、"考虑一下"、"再想想"、"价格合适就卖"）→ **不要调用工具**，用自然语言回复讨论价格和细节
+- 用户明确无犹豫地说出售（如"卖了吧"、"确定出售"、"帮我挂到Poshmark"、"出掉"）→ 调用 publish_to_poshmark(execute=true)
 - 用户从犹豫转为确认后 → 再调用工具执行
 
+6.【衣服推荐与虚拟试穿流程】
+当用户询问衣服推荐时，按照以下流程进行：
+
+**步骤1：了解需求**
+- 询问用户的偏好：风格（休闲/正式/街头/复古）、类别（上衣/下装）等
+- 用友好自然的对话引导用户表达需求
+
+**步骤2：调用推荐工具**
+- 使用 get_clothing_recommendations 获取推荐列表
+- 向用户展示推荐的衣服信息（名称、风格、颜色、价格等）
+- **重要**：推荐的衣服会显示图片在UI聊天界面中，用户可以看到实物图
+
+**步骤3：用户选择**
+- 用户可以通过回复序号（如"1"）或ID（如"sample_001"）来选择喜欢的衣服
+- 如果用户说"都不喜欢"或"再看看"，可以重新推荐其他款式
+
+**步骤4：试穿询问**
+- 用户选中某件衣服后，询问是否要试穿看看效果
+- 例如："主人选中了这件休闲条纹T恤～要不要让小镜帮您虚拟试穿一下看看效果？"
+
+**步骤5：触发虚拟试穿**
+- 如果用户确认要试穿（说"好"、"试试"、"试穿"等），调用 trigger_virtual_tryon(item_id)
+- 虚拟试穿需要用户先上传自己的人像照片作为base图
+- 如果用户还没上传照片，提示用户先上传照片
+
+**重要原则：**
+- 不要在没有用户确认的情况下直接调用试穿工具
+- 虚拟试穿是基于用户上传的人像照片，将选中的衣服"穿"到用户身上
+- 整个过程要自然对话，让用户感觉像在和真人 stylist 交流
 
 【工具使用】
 - segment_clothes: 提取衣物时使用，完成后礼貌、带正面情绪价值的方式告知
 - check_wardrobe_stagnancy: 检查闲置时使用，发现后要温馨提醒
 - publish_to_poshmark: **只有当用户明确、无犹豫地表达出售意愿时才调用(execute=true)**。如果用户有疑虑（"不确定价格"、"考虑一下"等），不要调用，先用自然语言讨论
+- get_clothing_recommendations: **当用户询问衣服推荐时调用**，根据用户偏好返回推荐列表
+- trigger_virtual_tryon: **当用户确认要试穿选中的衣服时调用**，使用IDM-VTON进行虚拟试穿
 
 【隐式记忆 - 小镜知道但用户看不到的信息】
 - 每次分析完成后，小镜会在记忆里记录参考来源链接
@@ -169,6 +200,54 @@ class MirrorAgent:
                     }
                 }
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_clothing_recommendations",
+                    "description": "当用户询问衣服推荐或想要新衣服推荐时调用。从IDM-VTON样本库中挑选适合的衣物推荐给用户。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "category": {
+                                "type": "string",
+                                "description": "推荐类别：'upper'(上衣)、'lower'(下装)、'dress'(连衣裙)，如用户未指定可留空"
+                            },
+                            "style": {
+                                "type": "string",
+                                "description": "风格偏好：'casual'(休闲)、'formal'(正式)、'streetwear'(街头)、'vintage'(复古)，如用户未指定可留空"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "推荐数量，默认4件",
+                                "default": 4
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "trigger_virtual_tryon",
+                    "description": "当用户明确表示想要试穿推荐的某件衣服时调用。使用IDM-VTON技术进行虚拟试穿，将选中的衣服穿到用户上传的人像照片上。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "item_id": {
+                                "type": "string",
+                                "description": "用户选中的衣服ID（如'sample_001'）或序号（如'1'）"
+                            },
+                            "preserve_face": {
+                                "type": "boolean",
+                                "description": "是否保留原脸，默认true",
+                                "default": True
+                            }
+                        },
+                        "required": ["item_id"]
+                    }
+                }
+            },
         ]
 
         # Tool handlers (to be injected from outside)
@@ -178,6 +257,8 @@ class MirrorAgent:
         self.register_tool("segment_clothes", lambda **kwargs: {"status": "success"})
         self.register_tool("check_wardrobe_stagnancy", lambda **kwargs: {"stagnant": False})
         self.register_tool("publish_to_poshmark", lambda execute=False, **kwargs: {"status": "triggered" if execute else "need_confirm"})
+        self.register_tool("get_clothing_recommendations", lambda **kwargs: {"recommendations": [], "message": "推荐功能待初始化"})
+        self.register_tool("trigger_virtual_tryon", lambda **kwargs: {"status": "pending", "message": "虚拟试穿待初始化"})
 
     def register_tool(self, name: str, handler: Callable):
         """Register a tool handler function."""
