@@ -108,7 +108,7 @@ def analyze_clothing_image(image_path: str, api_key: str = None) -> Dict[str, st
 Be accurate based on what you see in the image."""
         
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.1-flash-lite-preview",
             contents=[prompt, img],
             config=types.GenerateContentConfig(
                 temperature=0.1,
@@ -390,6 +390,4 @@ def get_items_by_category(category: str) -> List[ClothingItem]:
     return [item for item in SAMPLE_CLOTHES_DB if item.category == category]
 
 
-# Initialize on module load
-if __name__ != "__main__":
-    init_recommendations_db()
+# DB is initialized lazily on first use (see get_recommendations, get_all_available_items, etc.)

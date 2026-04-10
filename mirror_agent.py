@@ -147,6 +147,9 @@ class MirrorAgent:
         # Store Gemini analysis result for publishing to Poshmark
         self.last_gemini_result: Optional[Dict[str, Any]] = None
 
+        # Cache the last generated listing template (to reuse Poshmark description)
+        self.last_listing_template: Optional[str] = None
+
         # Tool definitions for function calling
         self.tools = [
             {
@@ -430,8 +433,8 @@ class MirrorAgent:
                                         "role": "assistant",
                                         "content": f"抱歉主人，发布遇到了问题：{result_obj.get('message', '未知错误')}"
                                     })
-                            except:
-                                pass
+                            except Exception as e:
+                                print(f"[Agent] Failed to parse publish_to_poshmark result: {e}")
 
                     # Get final response from model
                     final_response = self.client.chat.completions.create(
@@ -865,11 +868,14 @@ class MirrorAgent:
             )
 
             template = response.choices[0].message.content
+            self.last_listing_template = template
             return template
 
         except Exception as e:
             print(f"[Template Generation Error] {e}")
-            return self._generate_simple_template(gemini_result, item_name, price)
+            fallback = self._generate_simple_template(gemini_result, item_name, price)
+            self.last_listing_template = fallback
+            return fallback
 
     def _generate_simple_template(self, gemini_result: Dict, item_name: str, price: str) -> str:
         """当 API 不可用时生成简单模板"""
@@ -972,12 +978,16 @@ class MirrorAgent:
 
             print(f"[Agent] 开始自动发布到 Poshmark: {image_path}")
 
-            # 先生成 Agent 文案，提取 Poshmark 描述部分
-            listing_template = self.generate_listing_template(
-                gemini_result=self.last_gemini_result,
-                item_name="",
-                price=""
-            )
+            # 优先复用之前已生成的文案，避免重复生成不一致的描述
+            if self.last_listing_template:
+                listing_template = self.last_listing_template
+                print(f"[Agent] 复用已生成的 listing 文案")
+            else:
+                listing_template = self.generate_listing_template(
+                    gemini_result=self.last_gemini_result,
+                    item_name="",
+                    price=""
+                )
 
             # 提取 Poshmark 描述部分（从 "🇺🇸 【Poshmark 发布模板】" 到 "━━━" 结束）
             custom_description = None

@@ -36,10 +36,10 @@ agent_instance = None
 last_uploaded_image = None  # 保存用户上传的原图路径
 
 # Initialize GSAM client
-gsam_client = GSAMClient("http://localhost:8000")
+gsam_client = GSAMClient(os.getenv("GSAM_URL", "http://localhost:8000"))
 
 # Initialize IDM-VTON client
-idm_vton_client = IDMVTONClient("http://localhost:8001")
+idm_vton_client = IDMVTONClient(os.getenv("VTON_URL", "http://localhost:8001"))
 
 # Storage directory
 EXTRACTED_DIR = "./extracted_clothes"
@@ -253,7 +253,12 @@ def process_with_technical_log(image, item_name_prefix, tech_log, chat_state):
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📷 接收到主人上传的图片...")
     yield "\n".join(logs), chat_msgs, None, None, None, None
     temp_path = f"./temp_upload_{generate_timestamp()}.jpg"
-    image.save(temp_path)
+    try:
+        image.save(temp_path)
+    except Exception as e:
+        logs.append(f"❌ 图片保存失败：{e}")
+        yield "\n".join(logs), chat_msgs, None, None, None, None
+        return
     last_uploaded_image = os.path.abspath(temp_path)  # 保存用户上传的原图路径
     time.sleep(0.3)
 
@@ -620,7 +625,7 @@ def chat_with_butler_stream(message, image_path, chat_state):
 
     if agent_instance is None or agent_instance.client is None:
         # Replace loading with error message
-        chat_state[-1] = {"role": "assistant", "content": "小人目前身体不适（API未配置或无效），无法为主人服务...请设置 MOONSHOT_API_KEY 环境变量。"}
+        chat_state[-1] = {"role": "assistant", "content": "小人目前身体不适（API未配置或无效），无法为主人服务...请设置 GEMINI_API_KEY 环境变量。"}
         yield chat_state, ""
         return
 
@@ -690,21 +695,22 @@ def reset_demo():
             try:
                 os.remove(f)
                 cleanup_count += 1
-            except:
-                pass
+            except Exception as e:
+                print(f"[Reset] Failed to remove {f}: {e}")
         # Clean temp upload files
         for f in glob.glob("./temp_upload_*.jpg"):
             try:
                 os.remove(f)
                 cleanup_count += 1
-            except:
-                pass
+            except Exception as e:
+                print(f"[Reset] Failed to remove {f}: {e}")
         # Clean debug files
         for f in glob.glob("/tmp/last_search_*.txt") + glob.glob("/tmp/last_google_lens_*.json"):
             try:
                 os.remove(f)
                 cleanup_count += 1
-            except:
+            except Exception as e:
+                print(f"[Reset] Failed to remove {f}: {e}")
                 pass
         print(f"[Reset] Cleaned {cleanup_count} files")
     except Exception as e:
@@ -780,6 +786,8 @@ def virtual_try_on_handler(person_image, clothes_image_path, prompt, steps, guid
         # The client has try_on_images method that accepts PIL images directly
         # Bug fix: Handle both string path and PIL Image
         if isinstance(clothes_image_path, str):
+            if not os.path.exists(clothes_image_path):
+                return None, f"❌ 找不到服装图片：{clothes_image_path}"
             clothes_image = Image.open(clothes_image_path).convert("RGB")
         else:
             # Assume it's a PIL Image

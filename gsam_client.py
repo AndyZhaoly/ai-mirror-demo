@@ -40,7 +40,7 @@ class GSAMClient:
     def health_check(self) -> dict:
         """Check if the service is healthy."""
         try:
-            response = requests.get(f"{self.service_url}/health", timeout=5)
+            response = requests.get(f"{self.service_url}/health", timeout=30)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.ConnectionError:
@@ -87,7 +87,7 @@ class GSAMClient:
                 'white_background': white_background
             }
             
-            response = requests.post(url, files=files, data=data, timeout=60)
+            response = requests.post(url, files=files, data=data, timeout=300)
             response.raise_for_status()
         
         result = response.json()
@@ -122,7 +122,7 @@ class GSAMClient:
             files = {'image': f}
             data = {'white_background': white_background}
 
-            response = requests.post(url, files=files, data=data, timeout=60)
+            response = requests.post(url, files=files, data=data, timeout=300)
             response.raise_for_status()
 
         result = response.json()
@@ -164,7 +164,7 @@ class GSAMClient:
             files = {'image': f}
             data = {'white_background': white_background}
 
-            response = requests.post(url, files=files, data=data, timeout=60)
+            response = requests.post(url, files=files, data=data, timeout=300)
             response.raise_for_status()
 
         result = response.json()
