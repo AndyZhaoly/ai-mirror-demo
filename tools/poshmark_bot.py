@@ -562,9 +562,19 @@ def auto_publish_from_gemini_result(
         ]
         description = "\n".join(description_parts)
 
-    # 价格
-    original_price = official.get("amount", 100)
-    listing_price = resale.get("max_price", 50)
+    # 价格（Poshmark 用 USD）
+    CNY_TO_USD = 0.14  # 约 1 CNY = 0.14 USD
+
+    def to_usd(amount, currency: str) -> int:
+        if not amount:
+            return 0
+        currency = (currency or "").upper()
+        if currency in ("CNY", "RMB", "¥", "元"):
+            return max(1, round(amount * CNY_TO_USD))
+        return int(amount)
+
+    original_price = to_usd(official.get("amount", 0), official.get("currency", "USD")) or 100
+    listing_price = to_usd(resale.get("max_price", 0), resale.get("currency", "CNY")) or 50
 
     # 确定分类路径 - 优先使用 Gemini 返回的 poshmark_category
     category_path = ["Women", "Tops"]  # 默认
