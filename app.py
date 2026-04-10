@@ -26,7 +26,6 @@ from database_manager import (
 )
 from gsam_client import GSAMClient, draw_detection_boxes
 from mirror_agent import MirrorAgent, create_agent
-from idm_vton_client import IDMVTONClient
 
 # Global state
 current_workflow_state = None
@@ -37,9 +36,6 @@ last_uploaded_image = None  # 保存用户上传的原图路径
 
 # Initialize GSAM client
 gsam_client = GSAMClient(os.getenv("GSAM_URL", "http://localhost:8000"))
-
-# Initialize IDM-VTON client
-idm_vton_client = IDMVTONClient(os.getenv("VTON_URL", "http://localhost:8001"))
 
 # Storage directory
 EXTRACTED_DIR = "./extracted_clothes"
@@ -146,76 +142,10 @@ def init_agent(force=False):
 
             agent_instance.register_tool("publish_to_poshmark", poshmark_publish_tool)
 
-            # Register recommendation tool
-            def get_recommendations_tool(category: str = None, style: str = None, limit: int = 4):
-                """Get clothing recommendations from sample clothes."""
-                from recommendations import get_recommendations, format_recommendation_for_agent, get_recommendation_image_paths
-                
-                items = get_recommendations(
-                    category=category,
-                    style=style,
-                    limit=limit
-                )
-                
-                # Store for later use (e.g., displaying images)
-                global current_recommendations
-                current_recommendations = items
-                
-                # Get image paths for UI display
-                image_paths = get_recommendation_image_paths(items)
-                
-                # Format text for agent
-                text = format_recommendation_for_agent(items)
-                
-                return {
-                    "status": "success",
-                    "recommendations": [item.to_dict() for item in items],
-                    "image_paths": image_paths,
-                    "message": text
-                }
-            
-            agent_instance.register_tool("get_clothing_recommendations", get_recommendations_tool)
-            
-            # Register virtual try-on tool
-            def trigger_virtual_tryon_tool(item_id: str, preserve_face: bool = True):
-                """Trigger virtual try-on for selected item."""
-                global current_recommendations, pending_tryon_item, last_user_person_image
-                
-                # Find the selected item
-                from recommendations import get_item_by_id
-                
-                # Find the selected item using unified lookup
-                selected_item = get_item_by_id(item_id)
-                
-                if not selected_item:
-                    return {
-                        "status": "error",
-                        "message": "抱歉主人，小镜没找到这件衣服呢，请重新选择～"
-                    }
-                
-                # Check if user has uploaded a person image
-                # Note: In actual implementation, this would be checked against the stored user image
-                pending_tryon_item = selected_item
-                
-                return {
-                    "status": "success",
-                    "message": f"已选中 **{selected_item.name}** 准备试穿！小镜需要主人的人像照片作为试穿基础图，请上传照片后点击虚拟试穿～",
-                    "item": selected_item.to_dict(),
-                    "needs_person_image": True
-                }
-            
-            agent_instance.register_tool("trigger_virtual_tryon", trigger_virtual_tryon_tool)
-
         except ValueError as e:
             print(f"Agent init failed: {e}")
             agent_instance = None
     return agent_instance
-
-
-# Global state for recommendation workflow
-current_recommendations = []  # Current recommendation items
-pending_tryon_item = None     # Item selected for try-on
-last_user_person_image = None # User's uploaded person image for try-on base
 
 
 def generate_timestamp():
@@ -726,104 +656,6 @@ def reset_demo():
     )
 
 
-# ========== IDM-VTON Virtual Try-On Functions ==========
-
-def get_extracted_clothes():
-    """Get list of extracted clothes for dropdown selection."""
-    clothes_list = []
-    try:
-        import glob
-        image_extensions = ['*.png', '*.jpg', '*.jpeg']
-        for ext in image_extensions:
-            for f in sorted(glob.glob(f"{EXTRACTED_DIR}/{ext}")):
-                filename = os.path.basename(f)
-                # Skip detection files and temp files
-                if 'detection' not in filename and not filename.startswith('.'):
-                    clothes_list.append((filename, os.path.abspath(f)))
-    except Exception as e:
-        print(f"[get_extracted_clothes] Error: {e}")
-    return clothes_list
-
-
-def virtual_try_on_handler(person_image, clothes_image_path, prompt, steps, guidance, seed, preserve_face=True):
-    """
-    Handler for virtual try-on.
-    
-    Args:
-        person_image: PIL Image of the person (from webcam or upload)
-        clothes_image_path: Path to the clothes image (str path or PIL Image)
-        prompt: Text prompt
-        steps: Number of inference steps
-        guidance: Guidance scale
-        seed: Random seed
-        preserve_face: Whether to preserve the original face
-    
-    Returns:
-        Tuple of (result_image, status_message)
-    """
-    global last_uploaded_image
-    
-    # If no person_image provided, try to use the last uploaded image from GSAM
-    if person_image is None:
-        if last_uploaded_image and os.path.exists(last_uploaded_image):
-            try:
-                person_image = Image.open(last_uploaded_image).convert("RGB")
-                print(f"[VTON] Using last uploaded image as person base: {last_uploaded_image}")
-            except Exception as e:
-                print(f"[VTON] Failed to load last uploaded image: {e}")
-                return None, "❌ 请上传人物照片（或先使用左侧分割功能上传照片）"
-        else:
-            return None, "❌ 请上传人物照片（或先使用左侧分割功能上传照片）"
-    
-    if not clothes_image_path:
-        return None, "❌ 请选择要试穿的衣服"
-    
-    if not idm_vton_client.available:
-        return None, "❌ IDM-VTON 服务不可用，请先启动服务：python idm_vton_service.py"
-    
-    try:
-        # Convert PIL to the format expected by client
-        # The client has try_on_images method that accepts PIL images directly
-        # Bug fix: Handle both string path and PIL Image
-        if isinstance(clothes_image_path, str):
-            if not os.path.exists(clothes_image_path):
-                return None, f"❌ 找不到服装图片：{clothes_image_path}"
-            clothes_image = Image.open(clothes_image_path).convert("RGB")
-        else:
-            # Assume it's a PIL Image
-            clothes_image = clothes_image_path.convert("RGB")
-        
-        # Resize images to appropriate size
-        person_image = person_image.convert("RGB")
-        
-        # Run virtual try-on
-        result_image = idm_vton_client.try_on_images(
-            person_image=person_image,
-            clothes_image=clothes_image,
-            prompt=prompt,
-            num_inference_steps=steps,
-            guidance_scale=guidance,
-            seed=seed,
-            preserve_face=preserve_face,
-        )
-        
-        face_msg = " (已保留原脸)" if preserve_face else ""
-        return result_image, f"✅ 虚拟试衣完成！{face_msg}"
-        
-    except Exception as e:
-        import traceback
-        error_msg = f"❌ 试衣失败: {str(e)}"
-        print(traceback.format_exc())
-        return None, error_msg
-
-
-def refresh_clothes_list():
-    """Refresh the clothes dropdown list."""
-    clothes = get_extracted_clothes()
-    choices = [("-- 请选择 --", "")] + clothes
-    return gr.Dropdown(choices=choices, value="")
-
-
 # ========== Gradio UI ==========
 
 with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
@@ -991,116 +823,6 @@ with gr.Blocks(title="🤵 AI 时尚管家 - FashionClaw") as demo:
 
     # Auto-reset on load
     demo.load(reset_demo, outputs=[tech_log, chat_state, upper_detection_result, upper_result, lower_detection_result, lower_result])
-
-    # ========== IDM-VTON Virtual Try-On Section ==========
-    gr.Markdown("---")
-    gr.Markdown("### 👗 虚拟试衣 (IDM-VTON)")
-    gr.Markdown("*上传人物照片，选择衣物，AI 生成试穿效果*")
-
-    with gr.Row():
-        # Left: Inputs
-        with gr.Column(scale=1):
-            gr.Markdown("#### 📷 人物照片")
-            vton_person_image = gr.Image(
-                type="pil",
-                label="上传或拍摄人物照片（留空则使用左侧上传的照片）",
-                sources=["upload", "webcam"]
-            )
-
-            gr.Markdown("#### 👕 选择衣物")
-            # Dropdown for extracted clothes
-            clothes_dropdown = gr.Dropdown(
-                choices=[("-- 请选择 --", "")],
-                value="",
-                label="从已提取的衣物中选择",
-                interactive=True
-            )
-            refresh_btn = gr.Button("🔄 刷新衣物列表", size="sm")
-
-            # Or upload custom clothes
-            gr.Markdown("*或上传自定义衣物照片*")
-            vton_clothes_image = gr.Image(
-                type="pil",
-                label="上传衣物照片（可选）",
-                sources=["upload"]
-            )
-
-            gr.Markdown("#### ⚙️ 高级参数")
-            with gr.Accordion("调整生成参数", open=False):
-                vton_prompt = gr.Textbox(
-                    label="提示词",
-                    value="a photo of a person wearing clothes",
-                    placeholder="描述想要的效果"
-                )
-                vton_steps = gr.Slider(
-                    label="推理步数",
-                    minimum=10,
-                    maximum=50,
-                    value=30,
-                    step=1
-                )
-                vton_guidance = gr.Slider(
-                    label="引导系数",
-                    minimum=1.0,
-                    maximum=5.0,
-                    value=2.0,
-                    step=0.1
-                )
-                vton_seed = gr.Number(
-                    label="随机种子",
-                    value=42,
-                    precision=0
-                )
-                vton_preserve_face = gr.Checkbox(
-                    label="保留原脸 (Face Preservation)",
-                    value=True,
-                    info="使用SCHP模型提取脸部并拼回生成结果"
-                )
-
-            vton_btn = gr.Button("✨ 开始试衣", variant="primary", size="lg")
-
-        # Right: Result
-        with gr.Column(scale=1):
-            gr.Markdown("#### 🎨 试穿结果")
-            vton_result = gr.Image(
-                type="pil",
-                label="生成结果",
-                interactive=False,
-                height=600
-            )
-            vton_status = gr.Textbox(
-                label="状态",
-                value="等待开始...",
-                interactive=False
-            )
-
-    # Event handlers for Virtual Try-On
-    refresh_btn.click(
-        fn=refresh_clothes_list,
-        outputs=[clothes_dropdown]
-    )
-
-    def handle_vton(person_img, clothes_path, clothes_img, prompt, steps, guidance, seed, preserve_face):
-        """Handle virtual try-on with priority to uploaded clothes image."""
-        # Use uploaded clothes image if available, otherwise use dropdown selection
-        clothes_source = clothes_img if clothes_img is not None else clothes_path
-        return virtual_try_on_handler(person_img, clothes_source, prompt, steps, guidance, seed, preserve_face)
-
-    vton_btn.click(
-        fn=handle_vton,
-        inputs=[
-            vton_person_image,
-            clothes_dropdown,
-            vton_clothes_image,
-            vton_prompt,
-            vton_steps,
-            vton_guidance,
-            vton_seed,
-            vton_preserve_face
-        ],
-        outputs=[vton_result, vton_status],
-        show_progress=True
-    )
 
 if __name__ == "__main__":
     demo.launch(
