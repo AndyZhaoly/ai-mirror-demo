@@ -9,7 +9,7 @@ import base64
 import torch
 from PIL import Image
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -28,8 +28,77 @@ _parsing_model = None
 _openpose_model = None
 _face_preservation = None
 
-# Device configuration
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def get_free_gpu():
+    """Find the GPU with the most free memory."""
+    if not torch.cuda.is_available():
+        return 'cpu'
+    
+    try:
+        import subprocess
+        # Get GPU memory info using nvidia-smi
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.free,memory.total', '--format=csv,nounits,noheader'],
+            capture_output=True, text=True
+        )
+        
+        if result.returncode != 0:
+            print("nvidia-smi failed, using default cuda:0")
+            return 'cuda:0'
+        
+        lines = result.stdout.strip().split('\n')
+        max_free = 0
+        best_gpu = 0
+        
+        for i, line in enumerate(lines):
+            parts = line.split(',')
+            if len(parts) >= 2:
+                free_mem = int(parts[0].strip())
+                total_mem = int(parts[1].strip())
+                print(f"GPU {i}: {free_mem}MB free / {total_mem}MB total")
+                
+                if free_mem > max_free:
+                    max_free = free_mem
+                    best_gpu = i
+        
+        print(f"Selected GPU {best_gpu} with {max_free}MB free memory")
+        return f'cuda:{best_gpu}'
+        
+    except Exception as e:
+        print(f"Failed to detect free GPU: {e}, using default cuda:0")
+        return 'cuda:0' if torch.cuda.is_available() else 'cpu'
+
+
+# Device configuration - auto-select the most free GPU
+DEVICE = torch.device(get_free_gpu())
+
+# Import required modules from IDM-VTON
+try:
+    from torchvision import transforms
+    from utils_mask import get_mask_location
+    import apply_net
+    from detectron2.data.detection_utils import convert_PIL_to_numpy, _apply_exif_orientation
+    from torchvision.transforms.functional import to_pil_image
+    from face_preservation import FacePreservation, visualize_mask
+    IMPORTS_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Some IDM-VTON imports failed: {e}")
+    IMPORTS_AVAILABLE = False
+
+
+def pil_to_binary_mask(pil_image, threshold=0):
+    """Convert PIL image to binary mask."""
+    np_image = np.array(pil_image)
+    grayscale_image = Image.fromarray(np_image).convert("L")
+    binary_mask = np.array(grayscale_image) > threshold
+    mask = np.zeros(binary_mask.shape, dtype=np.uint8)
+    for i in range(binary_mask.shape[0]):
+        for j in range(binary_mask.shape[1]):
+            if binary_mask[i,j] == True:
+                mask[i,j] = 1
+    mask = (mask*255).astype(np.uint8)
+    output_mask = Image.fromarray(mask)
+    return output_mask
 
 
 def load_parsing_model():
@@ -42,8 +111,10 @@ def load_parsing_model():
             from preprocess.openpose.run_openpose import OpenPose
             from face_preservation import FacePreservation
             
-            _parsing_model = Parsing(4)  # gpu_id=4 in original
-            _openpose_model = OpenPose(4)
+            # Use the same GPU as the pipeline
+            gpu_id = DEVICE.index if DEVICE.type == 'cuda' else 0
+            _parsing_model = Parsing(gpu_id)
+            _openpose_model = OpenPose(gpu_id)
             
             _face_preservation = FacePreservation(
                 parsing_model=_parsing_model,
@@ -189,6 +260,197 @@ def base64_to_pil(base64_str: str) -> Image.Image:
     return Image.open(io.BytesIO(img_data))
 
 
+def perform_tryon(
+    person_img: Image.Image,
+    clothes_img: Image.Image,
+    prompt: str = "a photo of a person wearing clothes",
+    num_inference_steps: int = 30,
+    guidance_scale: float = 2.0,
+    seed: int = 42,
+    preserve_face: bool = True,
+) -> Image.Image:
+    """
+    Perform virtual try-on using IDM-VTON pipeline.
+    
+    Args:
+        person_img: Image of the person
+        clothes_img: Image of the clothes to try on
+        prompt: Text prompt for generation
+        num_inference_steps: Number of denoising steps
+        guidance_scale: Guidance scale
+        seed: Random seed
+        preserve_face: Whether to preserve the original face
+    
+    Returns:
+        Result image as PIL Image
+    """
+    global _idm_pipeline, _parsing_model, _openpose_model, _face_preservation
+    
+    if _idm_pipeline is None:
+        raise RuntimeError("Pipeline not loaded")
+    
+    # Clear CUDA cache to free up memory
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    # Convert images to RGB and resize to model input size
+    garm_img = clothes_img.convert("RGB").resize((768, 1024))
+    human_img_orig = person_img.convert("RGB")
+    
+    # Store original image size for later restoration
+    orig_width, orig_height = human_img_orig.size
+    
+    # Letterboxing: resize with aspect ratio preserved, pad with white
+    ratio = min(768 / orig_width, 1024 / orig_height)
+    new_width = int(orig_width * ratio)
+    new_height = int(orig_height * ratio)
+    
+    # Resize with high-quality antialiasing
+    resized_orig = human_img_orig.resize((new_width, new_height), Image.LANCZOS)
+    
+    # Create 768x1024 white canvas
+    human_img = Image.new("RGB", (768, 1024), (255, 255, 255))
+    
+    # Center the resized image
+    paste_x = (768 - new_width) // 2
+    paste_y = (1024 - new_height) // 2
+    human_img.paste(resized_orig, (paste_x, paste_y))
+    
+    # Generate mask using parsing and openpose models
+    if _openpose_model is not None and _parsing_model is not None:
+        keypoints = _openpose_model(human_img.resize((384, 512)))
+        model_parse, _ = _parsing_model(human_img.resize((384, 512)))
+        mask, mask_gray = get_mask_location('hd', "upper_body", model_parse, keypoints)
+        mask = mask.resize((768, 1024))
+    else:
+        # Fallback: create a simple upper body mask
+        mask = Image.new('L', (768, 1024), 0)
+        # Fill upper body region (approximate)
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle([100, 100, 668, 600], fill=255)
+    
+    # Create tensor transform
+    tensor_transfrom = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ])
+    
+    mask_gray = (1 - transforms.ToTensor()(mask)) * tensor_transfrom(human_img)
+    mask_gray = to_pil_image((mask_gray + 1.0) / 2.0)
+    
+    # Generate DensePose pose image
+    human_img_arg = _apply_exif_orientation(human_img.resize((384, 512)))
+    human_img_arg = convert_PIL_to_numpy(human_img_arg, format="BGR")
+    
+    # Create args for DensePose
+    # Note: MODEL.DEVICE should be 'cuda' or 'cpu', not 'cuda:0'
+    device_str = 'cuda' if DEVICE.type == 'cuda' else 'cpu'
+    args = apply_net.create_argument_parser().parse_args(
+        ('show',
+         os.path.join(IDM_VTON_ROOT, 'configs/densepose_rcnn_R_50_FPN_s1x.yaml'),
+         os.path.join(IDM_VTON_ROOT, 'ckpt/densepose/model_final_162be9.pkl'),
+         'dp_segm', '-v', '--opts', 'MODEL.DEVICE', device_str)
+    )
+    
+    pose_img = args.func(args, human_img_arg)
+    pose_img = pose_img[:, :, ::-1]  # BGR to RGB
+    pose_img = Image.fromarray(pose_img).resize((768, 1024))
+    
+    # Prepare garment description from prompt
+    garment_des = prompt.replace("a photo of a person wearing ", "").replace("a photo of ", "")
+    
+    # Run inference
+    with torch.no_grad():
+        with torch.cuda.amp.autocast():
+            with torch.no_grad():
+                # Encode prompt for person
+                prompt_text = "model is wearing " + garment_des
+                negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
+                
+                with torch.inference_mode():
+                    (
+                        prompt_embeds,
+                        negative_prompt_embeds,
+                        pooled_prompt_embeds,
+                        negative_pooled_prompt_embeds,
+                    ) = _idm_pipeline.encode_prompt(
+                        prompt_text,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=True,
+                        negative_prompt=negative_prompt,
+                    )
+                
+                # Encode prompt for garment
+                prompt_cloth = "a photo of " + garment_des
+                if not isinstance(prompt_cloth, List):
+                    prompt_cloth = [prompt_cloth] * 1
+                if not isinstance(negative_prompt, List):
+                    negative_prompt_cloth = [negative_prompt] * 1
+                
+                with torch.inference_mode():
+                    (
+                        prompt_embeds_c,
+                        _,
+                        _,
+                        _,
+                    ) = _idm_pipeline.encode_prompt(
+                        prompt_cloth,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=False,
+                        negative_prompt=negative_prompt_cloth,
+                    )
+                
+                # Prepare tensors
+                pose_img_tensor = tensor_transfrom(pose_img).unsqueeze(0).to(DEVICE, torch.float16)
+                garm_tensor = tensor_transfrom(garm_img).unsqueeze(0).to(DEVICE, torch.float16)
+                
+                generator = torch.Generator(DEVICE).manual_seed(seed) if seed is not None else None
+                
+                # Run pipeline
+                images = _idm_pipeline(
+                    prompt_embeds=prompt_embeds.to(DEVICE, torch.float16),
+                    negative_prompt_embeds=negative_prompt_embeds.to(DEVICE, torch.float16),
+                    pooled_prompt_embeds=pooled_prompt_embeds.to(DEVICE, torch.float16),
+                    negative_pooled_prompt_embeds=negative_pooled_prompt_embeds.to(DEVICE, torch.float16),
+                    num_inference_steps=num_inference_steps,
+                    generator=generator,
+                    strength=1.0,
+                    pose_img=pose_img_tensor.to(DEVICE, torch.float16),
+                    text_embeds_cloth=prompt_embeds_c.to(DEVICE, torch.float16),
+                    cloth=garm_tensor.to(DEVICE, torch.float16),
+                    mask_image=mask,
+                    image=human_img,
+                    height=1024,
+                    width=768,
+                    ip_adapter_image=garm_img.resize((768, 1024)),
+                    guidance_scale=guidance_scale,
+                )[0]
+    
+    result_img = images[0]
+    
+    # Apply face preservation if enabled and available
+    if preserve_face and _face_preservation is not None:
+        try:
+            # For non-cropped, human_img is the source and result_img is the generated output
+            # Both should be (768, 1024) - resize source to match output if needed
+            if human_img.size != result_img.size:
+                orig_for_preserve = human_img.resize(result_img.size, Image.LANCZOS)
+            else:
+                orig_for_preserve = human_img
+            
+            result_img = _face_preservation(orig_for_preserve, result_img)
+        except Exception as e:
+            print(f"Face preservation failed: {e}")
+            # Continue without face preservation if it fails
+    
+    # Crop away letterbox padding and restore to original size
+    result_img = result_img.crop((paste_x, paste_y, paste_x + new_width, paste_y + new_height))
+    result_img = result_img.resize((orig_width, orig_height), Image.LANCZOS)
+    
+    return result_img
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load models on startup."""
@@ -257,22 +519,16 @@ async def tryon(
         person_img = Image.open(person_image.file).convert("RGB")
         clothes_img = Image.open(clothes_image.file).convert("RGB")
         
-        # Store original size for face preservation
-        original_person = person_img.copy()
-        orig_width, orig_height = person_img.size
-        
-        # Resize images to model input size (768x1024 as in original)
-        person_img = person_img.resize((768, 1024))
-        clothes_img = clothes_img.resize((768, 1024))
-        
-        # Prepare inputs for the pipeline
-        # This is a simplified version - full implementation would need mask generation
-        # and other preprocessing as in the original app.py
-        
-        # For now, return a placeholder
-        # TODO: Implement full try-on logic matching gradio_demo/app.py
-        
-        result_img = person_img  # Placeholder
+        # Perform try-on
+        result_img = perform_tryon(
+            person_img=person_img,
+            clothes_img=clothes_img,
+            prompt=prompt,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            preserve_face=preserve_face,
+        )
         
         # Convert result to base64
         result_base64 = pil_to_base64(result_img)
@@ -280,7 +536,7 @@ async def tryon(
         return {
             "status": "success",
             "result_image": result_base64,
-            "message": "Virtual try-on completed (placeholder - full implementation pending)"
+            "message": "Virtual try-on completed successfully"
         }
         
     except Exception as e:
@@ -321,16 +577,16 @@ async def tryon_base64(
         person_img = base64_to_pil(person_image_base64).convert("RGB")
         clothes_img = base64_to_pil(clothes_image_base64).convert("RGB")
         
-        # Store original for face preservation
-        original_person = person_img.copy()
-        orig_width, orig_height = person_img.size
-        
-        # Resize to model input size
-        person_img = person_img.resize((768, 1024))
-        clothes_img = clothes_img.resize((768, 1024))
-        
-        # Placeholder - full implementation would call pipeline here
-        result_img = person_img
+        # Perform try-on
+        result_img = perform_tryon(
+            person_img=person_img,
+            clothes_img=clothes_img,
+            prompt=prompt,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            preserve_face=preserve_face,
+        )
         
         # Convert to base64
         result_base64 = pil_to_base64(result_img)
@@ -338,7 +594,7 @@ async def tryon_base64(
         return {
             "status": "success",
             "result_image": result_base64,
-            "message": "Virtual try-on completed (placeholder - full implementation pending)"
+            "message": "Virtual try-on completed successfully"
         }
         
     except Exception as e:
