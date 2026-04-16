@@ -107,15 +107,30 @@ def analyze_clothing_image(image_path: str, api_key: str = None) -> Dict[str, st
 
 Be accurate based on what you see in the image."""
         
-        response = client.models.generate_content(
-            model="gemini-3.1-flash-lite-preview",
-            contents=[prompt, img],
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=500
-            )
-        )
-        
+        for attempt in range(4):
+            try:
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[prompt, img],
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=1024
+                    )
+                )
+                break
+            except Exception as e:
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    wait = 10 * (2 ** attempt)
+                    print(f"[Recommendations] 503 overload, retry in {wait}s... (attempt {attempt+1}/4)")
+                    import time as _time
+                    _time.sleep(wait)
+                    if attempt == 3:
+                        print(f"[Recommendations] VLM analysis failed after retries: {e}")
+                        return _fallback_analysis(image_path)
+                else:
+                    print(f"[Recommendations] VLM analysis failed: {e}")
+                    return _fallback_analysis(image_path)
+
         # Parse JSON from response
         text = response.text.strip()
         # Extract JSON if wrapped in code blocks
@@ -123,17 +138,32 @@ Be accurate based on what you see in the image."""
             text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text:
             text = text.split("```")[1].split("```")[0].strip()
-        
-        result = json.loads(text)
-        
+
+        # Extract JSON object bounds
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start != -1 and end > start:
+            text = text[start:end]
+
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            # Fallback: extract fields via regex if JSON is truncated
+            import re
+            result = {}
+            for key in ["name", "category", "style", "color", "material", "description"]:
+                m = re.search(rf'"{key}"\s*:\s*"([^"]*)"', text)
+                if m:
+                    result[key] = m.group(1)
+
         # Validate required fields
         required = ["name", "category", "style", "color", "material", "description"]
         for field in required:
             if field not in result:
                 result[field] = _get_default_value(field)
-        
+
         return result
-        
+
     except Exception as e:
         print(f"[Recommendations] VLM analysis failed: {e}")
         return _fallback_analysis(image_path)

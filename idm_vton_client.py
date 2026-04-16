@@ -60,10 +60,11 @@ class IDMVTONClient:
         guidance_scale: float = 2.0,
         seed: int = 42,
         preserve_face: bool = True,
+        clothing_category: str = "upper_body",
     ) -> Image.Image:
         """
         Perform virtual try-on.
-        
+
         Args:
             person_image_path: Path to the person image (model)
             clothes_image_path: Path to the clothes image (garment)
@@ -72,7 +73,8 @@ class IDMVTONClient:
             guidance_scale: Guidance scale for classifier-free guidance
             seed: Random seed for reproducibility
             preserve_face: Whether to preserve the original face
-        
+            clothing_category: Body region to mask ("upper_body", "lower_body", "dresses")
+
         Returns:
             PIL Image containing the try-on result
         """
@@ -80,7 +82,7 @@ class IDMVTONClient:
             raise RuntimeError("IDM-VTON service not available. Please start the service first.")
 
         url = f"{self.service_url}/tryon"
-        
+
         with open(person_image_path, 'rb') as f_person, \
              open(clothes_image_path, 'rb') as f_clothes:
             files = {
@@ -93,6 +95,7 @@ class IDMVTONClient:
                 'guidance_scale': guidance_scale,
                 'seed': seed,
                 'preserve_face': preserve_face,
+                'clothing_category': clothing_category,
             }
             
             response = requests.post(url, files=files, data=data, timeout=300)

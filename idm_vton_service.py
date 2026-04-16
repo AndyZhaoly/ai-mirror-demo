@@ -268,10 +268,11 @@ def perform_tryon(
     guidance_scale: float = 2.0,
     seed: int = 42,
     preserve_face: bool = True,
+    clothing_category: str = "upper_body",
 ) -> Image.Image:
     """
     Perform virtual try-on using IDM-VTON pipeline.
-    
+
     Args:
         person_img: Image of the person
         clothes_img: Image of the clothes to try on
@@ -280,7 +281,8 @@ def perform_tryon(
         guidance_scale: Guidance scale
         seed: Random seed
         preserve_face: Whether to preserve the original face
-    
+        clothing_category: Body region to mask ("upper_body", "lower_body", "dresses")
+
     Returns:
         Result image as PIL Image
     """
@@ -320,15 +322,22 @@ def perform_tryon(
     if _openpose_model is not None and _parsing_model is not None:
         keypoints = _openpose_model(human_img.resize((384, 512)))
         model_parse, _ = _parsing_model(human_img.resize((384, 512)))
-        mask, mask_gray = get_mask_location('hd', "upper_body", model_parse, keypoints)
+        mask, mask_gray = get_mask_location('hd', clothing_category, model_parse, keypoints)
         mask = mask.resize((768, 1024))
     else:
-        # Fallback: create a simple upper body mask
+        # Fallback: create a simple mask based on clothing category
         mask = Image.new('L', (768, 1024), 0)
-        # Fill upper body region (approximate)
         from PIL import ImageDraw
         draw = ImageDraw.Draw(mask)
-        draw.rectangle([100, 100, 668, 600], fill=255)
+        if clothing_category == "lower_body":
+            # Lower body region (waist to feet)
+            draw.rectangle([100, 512, 668, 950], fill=255)
+        elif clothing_category == "dresses":
+            # Full body region
+            draw.rectangle([100, 100, 668, 950], fill=255)
+        else:
+            # Upper body region (default)
+            draw.rectangle([100, 100, 668, 600], fill=255)
     
     # Create tensor transform
     tensor_transfrom = transforms.Compose([
@@ -489,6 +498,7 @@ async def tryon(
     guidance_scale: float = Form(2.0),
     seed: int = Form(42),
     preserve_face: bool = Form(True),
+    clothing_category: str = Form("upper_body"),
 ):
     """
     Perform virtual try-on.
@@ -528,17 +538,18 @@ async def tryon(
             guidance_scale=guidance_scale,
             seed=seed,
             preserve_face=preserve_face,
+            clothing_category=clothing_category,
         )
-        
+
         # Convert result to base64
         result_base64 = pil_to_base64(result_img)
-        
+
         return {
             "status": "success",
             "result_image": result_base64,
             "message": "Virtual try-on completed successfully"
         }
-        
+
     except Exception as e:
         import traceback
         print(traceback.format_exc())
@@ -557,6 +568,7 @@ async def tryon_base64(
     guidance_scale: float = Form(2.0),
     seed: int = Form(42),
     preserve_face: bool = Form(True),
+    clothing_category: str = Form("upper_body"),
 ):
     """
     Perform virtual try-on with base64 encoded images.
@@ -586,8 +598,9 @@ async def tryon_base64(
             guidance_scale=guidance_scale,
             seed=seed,
             preserve_face=preserve_face,
+            clothing_category=clothing_category,
         )
-        
+
         # Convert to base64
         result_base64 = pil_to_base64(result_img)
         

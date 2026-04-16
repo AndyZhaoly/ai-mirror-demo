@@ -170,13 +170,15 @@ def create_poshmark_listing(
                 # 2. 填写标题
                 print(f"[PoshmarkBot] 填写标题...")
                 title_input = page.get_by_placeholder("What are you selling?")
-                scroll_and_fill(title_input, title)
+                title_input.scroll_into_view_if_needed()
+                title_input.fill(title)
                 time.sleep(0.5)
 
                 # 3. 填写描述
                 print(f"[PoshmarkBot] 填写描述...")
                 desc_input = page.get_by_placeholder("Describe it!")
-                scroll_and_fill(desc_input, description, delay=20)
+                desc_input.scroll_into_view_if_needed()
+                desc_input.fill(description)
                 time.sleep(0.5)
 
                 # ==========================================
