@@ -1,242 +1,171 @@
-# 🤵 AI 时尚管家 · FashionClaw
+# 智能镜 · AI Fashion Assistant
 
-智能服装管理助手 —— 上传穿搭照片，AI 自动识别品牌、估价、一键发布到 Poshmark 出售。
+两个 Gradio demo，分别解决"买什么穿"和"不穿的怎么卖"两个场景。
 
-## ✨ 核心功能
+---
 
-- 📸 **智能分割**：GroundingDINO + SAM 自动提取衣物轮廓
-- 🧠 **品牌识别**：Gemini 3.1 Pro 直接识别品牌、型号、货号
-- 💰 **智能估价**：官方指导价 + 二手市场建议售价
-- 🤖 **AI 管家**：自然语言交互，像真人管家一样贴心
-- 🌐 **一键发布**：Agent 智能识别出售意图，自动填写 Poshmark 表单
+## Demo 1：智能试衣间（vton_combined_demo.py）
 
-## 🚀 快速开始
+上传自拍 → AI 夸穿搭 → 推荐搭配下装 → 虚拟试穿 → 纳入数字衣柜
 
-### 环境要求
-- Python 3.10+
-- GroundingDINO + SAM 服务（本地或远程）
+### 功能流程
 
-### 安装
+1. **上传自拍**：GSAM 自动分割上衣和下装，展示识别结果
+2. **AI 管家小镜**：夸主人今日穿搭，结合天气/场合给出具体细节
+3. **推荐搭配**：主人开口后，小镜从 demo_garments 里推荐下装（Gemini VLM 预分析）
+4. **虚拟试穿**：IDM-VTON 生成试穿效果，支持单件或三件对比
+5. **纳入衣柜**：满意的单品一键存入本地数据库
+
+### 架构
+
+```
+用户自拍
+  ↓
+GSAM 服务（port 8000）— GroundingDINO + SAM 分割上下装
+  ↓
+Gemini Agent（小镜）— function calling 驱动整个流程
+  ├── show_recommendations    → 展示 demo_garments 里的单品
+  ├── trigger_virtual_tryon   → IDM-VTON 服务（port 8001）生成试穿图
+  ├── try_all_lower           → 批量试穿所有下装，对比展示
+  └── add_to_wardrobe         → 写入 database.json
+```
+
+### 启动
+
+```bash
+# 环境变量
+export GEMINI_API_KEY=your_key
+export GSAM_URL=http://localhost:8000       # GSAM 服务地址
+export VTON_URL=http://localhost:8001       # IDM-VTON 服务地址
+export VTON_COMBINED_PORT=7864             # 可选，默认 7864
+
+# 启动
+python vton_combined_demo.py
+```
+
+访问 `http://localhost:7864`
+
+---
+
+## Demo 2：闲置变现管家（poshmark_demo.py）
+
+上传闲置衣物 → AI 分析品相 → 生成 Poshmark 英文文案 → 自动挂单
+
+### 功能流程
+
+1. **上传衣物照片**：GSAM 分割提取衣物主体，用于挂单封面图
+2. **AI 管家小镜**：识别单品信息（品牌/品类/尺码/成色）
+3. **定价建议**：参考原价和二手市场，给出美元挂单价
+4. **生成文案**：Gemini 写 Poshmark 英文 listing（标题 + 描述 + 尺码 + 护理说明）
+5. **自动挂单**：Playwright 打开浏览器，自动填写 Poshmark 表单，人工确认后发布
+
+### 架构
+
+```
+用户上传衣物照片
+  ↓
+GSAM 服务（port 8000）— 分割衣物主体
+  ↓
+Gemini Agent（小镜）— function calling 驱动流程
+  ├── identify_item              → 返回单品信息（当前为硬编码演示数据）
+  ├── get_resale_price           → 计算人民币→美元定价
+  ├── generate_poshmark_listing  → Gemini 生成英文文案
+  └── post_to_poshmark           → Playwright 自动填表挂单
+```
+
+### 启动
+
+```bash
+export GEMINI_API_KEY=your_key
+export GSAM_URL=http://localhost:8000
+export POSHMARK_DEMO_PORT=7863    # 可选，默认 7863
+
+python poshmark_demo.py
+```
+
+访问 `http://localhost:7863`
+
+首次使用需要登录 Poshmark（Playwright 会打开真实浏览器，手动完成登录，之后 session 自动保存）。
+
+---
+
+## 依赖服务
+
+两个 demo 都依赖以下两个后端服务，需要在有 GPU 的机器上运行：
+
+| 服务 | 代码 | 默认端口 |
+|------|------|----------|
+| GSAM（图像分割） | [AndyZhaoly/grounded-segment-anything](https://github.com/AndyZhaoly/grounded-segment-anything) | 8000 |
+| IDM-VTON（虚拟试穿） | [AndyZhaoly/idm-vton](https://github.com/AndyZhaoly/idm-vton) | 8001 |
+
+两个 repo 已包含为 git submodule，clone 时一并拉取：
+
+```bash
+git clone --recurse-submodules https://github.com/AndyZhaoly/ai-mirror-demo.git
+```
+
+### 本地没有 GPU？用 SSH 隧道连服务器
+
+```bash
+# 把服务器的 8000/8001 端口映射到本地
+ssh -L 8000:localhost:8000 -L 8001:localhost:8001 -p 20009 zhaoliyang@your-server-ip
+```
+
+之后 demo 代码照常连 `localhost:8000` / `localhost:8001`。
+
+### 启动服务器上的服务
+
+```bash
+# GSAM（在服务器上）
+cd ~/Grounded-Segment-Anything
+bash start_service.sh    # 默认 port 8000
+
+# IDM-VTON（在服务器上）
+conda activate idm
+cd ~/IDM-VTON
+python idm_vton_service.py    # 默认 port 8001
+```
+
+---
+
+## 安装
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### 配置 API Keys
-创建 `.env` 文件：
-```bash
-# 必需
-GEMINI_API_KEY=your_gemini_api_key
-
-# 可选
-MOONSHOT_API_KEY=your_kimi_api_key
-```
-
-获取 Gemini API Key：[Google AI Studio](https://aistudio.google.com/app/apikey)
-
-### 部署 GroundingDINO + SAM 服务（必需）
-
-本项目需要 GroundingDINO + SAM 服务进行图像分割。如果**没有 GPU**或**不想部署**，可选择以下方式：
-
-#### 快速开始（推荐无 GPU 用户）
-
-**使用预配置的远程服务器**（通过 SSH 隧道）：
+主要依赖：`gradio` `openai` `Pillow` `python-dotenv` `playwright`
 
 ```bash
-# 建立 SSH 隧道，连接我们预配置的服务器
-# 联系项目维护者获取服务器地址和账号
-ssh -L 8000:localhost:8000 username@demo-server.fashionclaw.ai
+# Playwright 浏览器（Poshmark demo 需要）
+playwright install chromium
 ```
 
-#### 选项 1：自己部署（推荐有 GPU 的用户）
+---
 
-**硬件要求：**
-- NVIDIA GPU 8GB+ 显存
-- CUDA 11.8+
-- Python 3.10+
-
-```bash
-# 克隆 GSAM 服务仓库
-git clone https://github.com/IDEA-Research/Grounded-Segment-Anything.git
-cd Grounded-Segment-Anything
-
-# 安装依赖
-pip install -e segment_anything
-pip install -e GroundingDINO
-pip install diffusers transformers accelerate opencv-python
-
-# 下载模型权重
-mkdir -p weights
-cd weights
-wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0/groundingdino_swint_ogc.pth
-wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
-cd ..
-
-# 启动服务
-python gradio_app.py --listen 0.0.0.0 --port 8000
-```
-
-**详细部署文档：** [GSAM 官方文档](https://github.com/IDEA-Research/Grounded-Segment-Anything)
-
-#### 选项 2：Docker 部署
-
-```bash
-# 拉取预构建镜像
-docker pull andyzhaoly/fashionclaw-gsam:latest
-
-# 运行容器
-docker run -d \
-  --name fashionclaw-gsam \
-  --gpus all \
-  -p 8000:8000 \
-  andyzhaoly/fashionclaw-gsam:latest
-```
-
-#### 选项 3：跳过图像分割（极简体验）
-
-如果暂时不需要分割功能，可以修改 `app.py` 直接使用原图：
-
-```python
-# app.py 中注释掉以下代码，直接返回原图
-# upper_images, upper_detection = gsam_client.extract_upper_body(...)
-# lower_images, lower_detection = gsam_client.extract_lower_body(...)
-
-# 改为：
-upper_images = [image]
-lower_images = []
-```
-
-> ⚠️ **注意：** 此模式下 Gemini 会直接分析完整图片，可能不如分割后的单件衣物识别准确。
-
-### 运行
-```bash
-# 确保 GSAM 服务可访问（本地或远程隧道）
-# 默认连接 http://localhost:8000
-
-# 启动主应用
-python app.py
-```
-
-访问 `http://localhost:7860`
-
-## 🏗️ 技术架构
-
-```
-用户上传图片
-    ↓
-GroundingDINO + SAM 分割（端口 8000）
-    ↓
-Gemini 3.1 Pro 视觉分析
-    ├── 品牌识别（Louis Vuitton, Nike, etc.）
-    ├── 型号/货号（1AJYH4, etc.）
-    ├── 材质分析
-    ├── 官方指导价
-    └── 二手估价建议
-    ↓
-AI Agent（Gemini 3.1 Flash-Lite）生成自然语言回复
-    ↓
-├─→ 自然语言对话（右侧 Chatbot）
-│
-└─→ Function Calling 检测出售意图
-        ↓
-    Playwright 自动填写 Poshmark 表单
-        ↓
-    浏览器窗口显示，等待确认发布
-```
-
-## 📁 项目结构
+## 项目结构
 
 ```
 .
-├── app.py                  # Gradio 主应用
-├── workflow.py             # LangGraph 工作流编排
-├── mirror_agent.py         # AI Agent（对话生成 + Function Calling）
-├── database.json           # 衣橱数据库
-├── requirements.txt        # Python 依赖
-├── .env                    # API Keys（用户自备）
+├── vton_combined_demo.py     # Demo 1：智能试衣间
+├── poshmark_demo.py          # Demo 2：闲置变现管家
+├── gsam_client.py            # GSAM 服务客户端
+├── idm_vton_client.py        # IDM-VTON 服务客户端
+├── idm_vton_service.py       # IDM-VTON 服务端（在 GPU 服务器上跑）
+├── database_manager.py       # 数字衣柜数据库操作
+├── recommendations.py        # Gemini VLM 分析衣物
+├── demo_garments/            # 试衣间的推荐单品图片
 ├── tools/
-│   ├── gemini_analyzer.py  # Gemini 3.1 Pro 分析模块
-│   ├── pricing_tool.py     # 定价工具（主入口）
-│   └── poshmark_bot.py     # Playwright 自动化发布
-├── poshmark_browser_data/  # Poshmark 登录状态（自动创建）
-└── extracted_clothes/      # 提取的衣物图片（运行时生成）
+│   └── poshmark_bot.py       # Playwright 自动挂单
+└── services/
+    ├── gsam/                 # submodule → AndyZhaoly/grounded-segment-anything
+    └── idm_vton/             # submodule → AndyZhaoly/idm-vton
 ```
 
-## 🔑 关键技术
+---
 
-| 组件 | 用途 | 版本 |
+## API Keys
+
+| 变量 | 用途 | 获取 |
 |------|------|------|
-| **Gemini 3.1 Pro** | 视觉识别品牌、型号、价格 | `gemini-3.1-pro-preview` |
-| **Gemini 3.1 Flash-Lite** | AI Agent 对话生成 | `gemini-3.1-flash-lite-preview` |
-| **GroundingDINO** | 目标检测 | - |
-| **SAM** | 图像分割 | - |
-| **Gradio** | Web 界面 | 4.x |
-| **Playwright** | 浏览器自动化（Poshmark）| - |
-| **Function Calling** | 智能识别出售意图 | OpenAI Compatible |
-
-## 💡 使用示例
-
-上传一张 LV 夹克照片 → 系统输出：
-
-```
-查到了！主人～ 🎉
-
-这件是 Louis Vuitton 的 Dark Floral Print Jacket！
-📦 货号：1AJYH4
-
-• 材质：100% 锦纶
-• 成色：几乎全新
-
-💰 价格参考
-• 官方指导价：3500 EUR
-• 二手市场价：¥25000 - ¥30000
-
-小镜建议定价 ¥30000 左右～
-```
-
-## 🔧 配置说明
-
-### GroundingDINO + SAM 服务
-
-默认连接本地 `http://localhost:8000`。如需使用远程服务：
-
-**方法 1：修改代码**（`app.py`）
-```python
-gsam_client = GSAMClient("http://your-remote-server:8000")
-```
-
-**方法 2：SSH 隧道**（推荐，安全连接远程服务）
-```bash
-# 在本地建立隧道，将远程 8000 端口映射到本地
-ssh -L 8000:localhost:8000 user@remote-server
-```
-
-或使用 `autossh` 保持连接：
-```bash
-autossh -M 0 -N -L 8000:localhost:8000 user@remote-server
-```
-
-### Poshmark 自动化
-
-首次使用需要登录 Poshmark：
-```bash
-python tools/poshmark_bot.py
-```
-在打开的浏览器中完成登录，之后会话会保存在 `poshmark_browser_data/` 目录。
-
-## 🔧 开发说明
-
-### 添加新的分析模型
-在 `tools/gemini_analyzer.py` 中修改 `DEFAULT_MODEL`：
-```python
-DEFAULT_MODEL = "gemini-3.1-pro-preview"  # 或 gemini-2.5-pro
-```
-
-### 调整价格估算逻辑
-修改 `tools/pricing_tool.py` 中的 `_get_mock_price()` 方法。
-
-### 自定义 Agent 回复风格
-修改 `mirror_agent.py` 中的 `SYSTEM_PROMPT`。
-
-## 📄 License
-
-MIT License
+| `GEMINI_API_KEY` | AI 对话 + VLM 分析 | [Google AI Studio](https://aistudio.google.com/app/apikey) |

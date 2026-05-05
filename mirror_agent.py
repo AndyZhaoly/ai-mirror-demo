@@ -58,10 +58,9 @@ SYSTEM_PROMPT = """
 - 主人要留着 → “主人的眼光独到，今天又get到了美美新衣”
 
 5.【出售意图判断 - 多轮确认】
-- 用户表达有疑虑的出售意向（如”我想卖，但不确定价格”、”考虑一下”、”再想想”、”价格合适就卖”）→ **不要调用工具**，用自然语言回复讨论价格和细节
-- 用户明确无犹豫地说出售（如”卖了吧”、”确定出售”、”帮我挂到Poshmark”、”出掉”）→ 调用 publish_to_poshmark(execute=true)
+- 用户表达有疑虑的出售意向（如"我想卖，但不确定价格"、"考虑一下"、"再想想"、"价格合适就卖"）→ **不要调用工具**，用自然语言回复讨论价格和细节
+- 用户明确无犹豫地说出售（如"卖了吧"、"确定出售"、"帮我挂到Poshmark"、"出掉"）→ 调用 publish_to_poshmark(execute=true)
 - 用户从犹豫转为确认后 → 再调用工具执行
-
 
 【工具使用】
 - segment_clothes: 提取衣物时使用，完成后礼貌、带正面情绪价值的方式告知
@@ -115,6 +114,9 @@ class MirrorAgent:
 
         # Store Gemini analysis result for publishing to Poshmark
         self.last_gemini_result: Optional[Dict[str, Any]] = None
+
+        # Cache the last generated listing template (to reuse Poshmark description)
+        self.last_listing_template: Optional[str] = None
 
         # Tool definitions for function calling
         self.tools = [
@@ -349,8 +351,8 @@ class MirrorAgent:
                                         "role": "assistant",
                                         "content": f"抱歉主人，发布遇到了问题：{result_obj.get('message', '未知错误')}"
                                     })
-                            except:
-                                pass
+                            except Exception as e:
+                                print(f"[Agent] Failed to parse publish_to_poshmark result: {e}")
 
                     # Get final response from model
                     final_response = self.client.chat.completions.create(
@@ -784,11 +786,14 @@ class MirrorAgent:
             )
 
             template = response.choices[0].message.content
+            self.last_listing_template = template
             return template
 
         except Exception as e:
             print(f"[Template Generation Error] {e}")
-            return self._generate_simple_template(gemini_result, item_name, price)
+            fallback = self._generate_simple_template(gemini_result, item_name, price)
+            self.last_listing_template = fallback
+            return fallback
 
     def _generate_simple_template(self, gemini_result: Dict, item_name: str, price: str) -> str:
         """当 API 不可用时生成简单模板"""
@@ -865,6 +870,58 @@ class MirrorAgent:
 """
         return template
 
+    def _extract_or_generate_poshmark_description(self, gemini_result: dict) -> str:
+        """
+        用 LLM 从对话历史中提取或生成 Poshmark 英文描述。
+
+        - 如果用户在对话里讨论/确认过描述，提取那个版本
+        - 如果没有，根据 gemini_result 自动生成
+        """
+        if not self.client:
+            return ""
+
+        # 取最近 12 条对话（system prompt 除外），避免 token 过多
+        recent = [m for m in self.messages if m.get("role") != "system"][-12:]
+
+        item = gemini_result.get("item_details", {}) if gemini_result else {}
+        brand = item.get("brand", "Unknown")
+        model = item.get("model_name", "")
+        condition = item.get("condition", "Good")
+        material = item.get("material", "")
+        color = item.get("color", "")
+
+        prompt = f"""You are helping prepare a Poshmark listing. Based on the conversation history below, produce ONLY the final English listing description (no title, no price, no extra commentary).
+
+Rules:
+- If the user has discussed or confirmed a specific description in the conversation, use that exact content.
+- If no description was discussed, generate a compelling English Poshmark description based on the item details.
+- Output ONLY the description text. No labels like "Description:", no Chinese text, no preamble.
+
+Item details for reference:
+- Brand: {brand}
+- Model: {model}
+- Condition: {condition}
+- Material: {material}
+- Color: {color}
+
+Conversation:
+{chr(10).join(f'{m["role"].upper()}: {m["content"]}' for m in recent if isinstance(m.get("content"), str))}
+"""
+
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=400,
+            )
+            description = resp.choices[0].message.content.strip()
+            print(f"[Agent] LLM 生成/提取 Poshmark 描述完成（{len(description)} chars）")
+            return description
+        except Exception as e:
+            print(f"[Agent] LLM 描述生成失败: {e}")
+            return ""
+
     def publish_to_poshmark(self, item_image_path: str = None, auto_submit: bool = False) -> str:
         """
         自动发布到 Poshmark（Agent 工具）
@@ -891,34 +948,8 @@ class MirrorAgent:
 
             print(f"[Agent] 开始自动发布到 Poshmark: {image_path}")
 
-            # 先生成 Agent 文案，提取 Poshmark 描述部分
-            listing_template = self.generate_listing_template(
-                gemini_result=self.last_gemini_result,
-                item_name="",
-                price=""
-            )
-
-            # 提取 Poshmark 描述部分（从 "🇺🇸 【Poshmark 发布模板】" 到 "━━━" 结束）
-            custom_description = None
-            if "🇺🇸 【Poshmark 发布模板】" in listing_template or "【Poshmark 发布模板】" in listing_template:
-                import re
-                # 尝试匹配 Poshmark 模板部分
-                match = re.search(r'【Poshmark 发布模板.*?\n\n📝 Title:.*?\n\n💰 Price:.*?\n\n📖 Description:\n(.*?)(?:\n\n[📏🏷️━])', listing_template, re.DOTALL)
-                if match:
-                    custom_description = match.group(1).strip()
-                    print(f"[Agent] 已提取 Agent 生成的 Poshmark 文案")
-                else:
-                    # 简单提取：找 Description: 之后的内容
-                    if "📖 Description:" in listing_template:
-                        desc_start = listing_template.find("📖 Description:")
-                        desc_text = listing_template[desc_start + len("📖 Description:"):]
-                        # 找到下一个分隔符
-                        for sep in ["\n\n📏", "\n\n🏷️", "\n━━━"]:
-                            if sep in desc_text:
-                                desc_text = desc_text[:desc_text.find(sep)]
-                                break
-                        custom_description = desc_text.strip()
-                        print(f"[Agent] 已提取 Agent 生成的 Poshmark 文案（备用方式）")
+            # 用 LLM 从对话历史提取或生成 Poshmark 描述
+            custom_description = self._extract_or_generate_poshmark_description(self.last_gemini_result)
 
             # 调用自动化脚本，传入自定义文案
             result = auto_publish_from_gemini_result(

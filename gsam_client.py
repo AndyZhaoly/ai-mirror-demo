@@ -40,7 +40,7 @@ class GSAMClient:
     def health_check(self) -> dict:
         """Check if the service is healthy."""
         try:
-            response = requests.get(f"{self.service_url}/health", timeout=5)
+            response = requests.get(f"{self.service_url}/health", timeout=30)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.ConnectionError:
@@ -87,7 +87,7 @@ class GSAMClient:
                 'white_background': white_background
             }
             
-            response = requests.post(url, files=files, data=data, timeout=60)
+            response = requests.post(url, files=files, data=data, timeout=300)
             response.raise_for_status()
         
         result = response.json()
@@ -122,7 +122,7 @@ class GSAMClient:
             files = {'image': f}
             data = {'white_background': white_background}
 
-            response = requests.post(url, files=files, data=data, timeout=60)
+            response = requests.post(url, files=files, data=data, timeout=300)
             response.raise_for_status()
 
         result = response.json()
@@ -164,7 +164,7 @@ class GSAMClient:
             files = {'image': f}
             data = {'white_background': white_background}
 
-            response = requests.post(url, files=files, data=data, timeout=60)
+            response = requests.post(url, files=files, data=data, timeout=300)
             response.raise_for_status()
 
         result = response.json()
@@ -188,6 +188,48 @@ class GSAMClient:
 
         return images, detection_info
     
+    def extract_shoes(self, image_path: str, white_background: bool = True) -> Tuple[List[Image.Image], Dict[str, Any]]:
+        """
+        Extract shoes from an image.
+
+        Args:
+            image_path: Path to the input image
+            white_background: Whether to place on white background
+
+        Returns:
+            Tuple of (segmented_images, detection_info)
+        """
+        url = f"{self.service_url}/extract_clothes"
+
+        with open(image_path, 'rb') as f:
+            files = {'image': f}
+            data = {
+                'prompt': 'shoes, sneakers, boots, heels, sandals',
+                'white_background': white_background,
+            }
+
+            response = requests.post(url, files=files, data=data, timeout=300)
+            response.raise_for_status()
+
+        result = response.json()
+
+        if result['status'] != 'success':
+            raise RuntimeError(f"Shoe extraction failed: {result.get('message', 'Unknown error')}")
+
+        images = []
+        for img_base64 in result.get('segmented_images', []):
+            img_bytes = base64.b64decode(img_base64)
+            img = Image.open(io.BytesIO(img_bytes))
+            images.append(img)
+
+        detection_info = {
+            'bounding_boxes': result.get('bounding_boxes', []),
+            'labels': result.get('labels', []),
+            'confidences': result.get('confidences', []),
+        }
+
+        return images, detection_info
+
     def extract_both(
         self,
         image_path: str,

@@ -1,0 +1,6 @@
+[submodule "services/gsam"]
+	path = services/gsam
+	url = https://github.com/AndyZhaoly/grounded-segment-anything.git
+[submodule "services/idm_vton"]
+	path = services/idm_vton
+	url = https://github.com/AndyZhaoly/idm-vton.git

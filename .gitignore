@@ -74,17 +74,14 @@ extracted_clothes/*
 temp_upload_*.jpg
 temp_*.jpg
 temp_*.png
+vton_temp/
+poshmark_temp/
+poshmark_browser_data/
+poshmark_error_screenshot.png
 
 # Debug files
 /tmp/last_search_*.txt
 /tmp/last_google_lens_*.json
 
-# Database (runtime mutable) - keep initial state
+# Database (runtime mutable)
 database.json
-
-# Demo images (potential copyright issues)
-images/*.jpg
-images/*.jpeg
-images/*.png
-images/*.webp
-!images/.gitkeep
