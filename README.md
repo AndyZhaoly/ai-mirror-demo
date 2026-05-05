@@ -113,6 +113,69 @@ ssh -L 8000:localhost:8000 -L 8001:localhost:8001 -p 20009 zhaoliyang@your-serve
 
 之后 demo 代码照常连 `localhost:8000` / `localhost:8001`。
 
+### 配置 conda 环境
+
+两个服务各有一个 `environment.yml`，里面列了所有依赖。**唯一需要手动改的是 PyTorch 那几行**，根据自己的 CUDA 版本取消注释对应的行。
+
+查看自己的 CUDA 版本：
+```bash
+nvidia-smi   # 右上角显示 CUDA Version
+```
+
+**GSAM 环境：**
+```bash
+cd ~/Grounded-Segment-Anything
+# 先编辑 environment.yml，取消注释对应的 PyTorch 版本
+conda env create -f environment.yml
+conda activate gsam_env
+pip install -e GroundingDINO
+pip install -e segment_anything
+```
+
+**IDM-VTON 环境：**
+```bash
+cd ~/IDM-VTON
+# 先编辑 environment.yml，取消注释对应的 PyTorch 版本
+conda env create -f environment.yml
+conda activate idm
+```
+
+| CUDA 版本 | 取消注释哪行 |
+|-----------|-------------|
+| 11.8 | `cu118` 那两行 |
+| 12.1 | `cu121` 那两行（IDM-VTON 默认推荐） |
+| 12.4 | `cu124` 那两行 |
+| 无 GPU | `cpu` 那两行（仅 GSAM，IDM-VTON 不支持 CPU）|
+
+---
+
+### 下载模型权重
+
+**GSAM（~3GB）**
+```bash
+cd ~/Grounded-Segment-Anything
+bash setup_gsam_service.sh   # 自动下载 GroundingDINO + SAM 权重
+```
+
+| 文件 | 大小 | 来源 |
+|------|------|------|
+| `groundingdino_swint_ogc.pth` | 662MB | [GitHub Releases](https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth) |
+| `sam_vit_h_4b8939.pth` | 2.4GB | [Meta](https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth) |
+
+**IDM-VTON（~32GB）**
+```bash
+cd ~/IDM-VTON
+bash download_weights.sh   # 自动下载所有权重
+```
+
+| 目录 | 大小 | 来源 |
+|------|------|------|
+| `checkpoints/`（主模型）| 28GB | [yisol/IDM-VTON](https://huggingface.co/yisol/IDM-VTON) |
+| `ckpt/humanparsing/` | 510MB | [yisol/IDM-VTON-DC](https://huggingface.co/yisol/IDM-VTON-DC) |
+| `ckpt/image_encoder/` | 2.4GB | [h94/IP-Adapter](https://huggingface.co/h94/IP-Adapter) |
+| `ckpt/densepose/` | 244MB | [Detectron2](https://dl.fbaipublicfiles.com/densepose/densepose_rcnn_R_50_FPN_s1x/165712039/model_final_162be9.pkl) |
+| `ckpt/openpose/` | 200MB | [yisol/IDM-VTON-DC](https://huggingface.co/yisol/IDM-VTON-DC) |
+
 ### 启动服务器上的服务
 
 ```bash
