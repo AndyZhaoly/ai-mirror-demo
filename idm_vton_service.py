@@ -287,10 +287,12 @@ def perform_tryon(
         Result image as PIL Image
     """
     global _idm_pipeline, _parsing_model, _openpose_model, _face_preservation
-    
+
+    print(f"[VTON] perform_tryon called | clothing_category={clothing_category!r} | prompt={prompt!r}")
+
     if _idm_pipeline is None:
         raise RuntimeError("Pipeline not loaded")
-    
+
     # Clear CUDA cache to free up memory
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

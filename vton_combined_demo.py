@@ -118,6 +118,7 @@ last_person_image_path: str | None = None
 last_upper_seg_path: str | None = None   # 分割出的上衣图，用于展示
 pending_gallery: list[tuple] = []
 pending_result: Image.Image | None = None
+pending_all_results: list[tuple] = []
 pending_status: str = ""
 last_selected_item: ClothingItem | None = None
 # 服务端维护的最新聊天历史（绕过 Gradio 客户端状态快照问题）
@@ -172,6 +173,51 @@ def handle_show_recommendations() -> dict:
     }
 
 
+# --- Chinese-name → simple English keywords for CLIP-friendly prompts --------
+_COLOR_EN = {
+    "黑": "black", "白": "white", "灰": "gray", "红": "red", "粉": "pink",
+    "蓝": "blue", "绿": "green", "黄": "yellow", "棕": "brown", "紫": "purple",
+    "米": "beige", "卡其": "khaki", "驼": "camel",
+}
+_TYPE_EN = [
+    # Longer / more specific keys first — iterated in order, first substring match wins.
+    ("百褶短裙", "pleated short skirt"),
+    ("阔腿休闲裤", "wide-leg casual pants"),
+    ("腰带休闲短裤", "belted casual shorts"),
+    ("阔腿裤", "wide-leg pants"),
+    ("百褶裙", "pleated skirt"),
+    ("休闲短裤", "casual shorts"),
+    ("牛仔短裤", "denim shorts"),
+    ("休闲裤", "casual pants"),
+    ("牛仔裤", "jeans"),
+    ("西裤", "trousers"),
+    ("短裙", "short skirt"),
+    ("长裙", "long skirt"),
+    ("短裤", "shorts"),
+    ("长裤", "long pants"),
+    ("裙", "skirt"),
+    ("裤", "pants"),
+]
+
+
+def _en_desc(item) -> str:
+    """Build a short English garment description from a Chinese ClothingItem."""
+    color_en = ""
+    for k, v in _COLOR_EN.items():
+        if k in (item.color or ""):
+            color_en = v
+            break
+    type_en = ""
+    src = (item.name or "") + (item.description or "")
+    for k, v in _TYPE_EN:
+        if k in src:
+            type_en = v
+            break
+    if not type_en:
+        type_en = {"upper": "top", "lower": "pants", "dress": "dress"}.get(item.category, "garment")
+    return f"{color_en} {type_en}".strip()
+
+
 def handle_trigger_virtual_tryon(garment_image_path: str) -> dict:
     global last_person_image_path, pending_result, pending_status, last_selected_item
 
@@ -191,19 +237,15 @@ def handle_trigger_virtual_tryon(garment_image_path: str) -> dict:
         return {"status": "error", "message": "试衣服务暂不可用（请确认 VTON_URL 服务已启动）"}
 
     try:
-        # Build a descriptive prompt from the selected item
-        item_desc = f"{last_selected_item.color} {last_selected_item.name}" if last_selected_item else "garment"
         # Map ClothingItem.category → IDM-VTON mask category
         category_map = {"upper": "upper_body", "lower": "lower_body", "dress": "dresses"}
         vton_category = category_map.get(
             last_selected_item.category if last_selected_item else "upper", "upper_body"
         )
-        if vton_category == "lower_body":
-            prompt = f"a photo of a person wearing {item_desc}, keeping the upper body clothing unchanged"
-        elif vton_category == "dresses":
-            prompt = f"a photo of a person wearing {item_desc}"
-        else:
-            prompt = f"a photo of a person wearing {item_desc}, keeping the lower body clothing unchanged"
+        # Keep prompt short & English — mask controls which region is edited,
+        # no need to say "keeping X unchanged" (that confuses the cloth CLIP encoder)
+        item_desc = _en_desc(last_selected_item) if last_selected_item else "garment"
+        prompt = f"a photo of a person wearing {item_desc}"
 
         result_image = vton_client.try_on(
             person_image_path=last_person_image_path,
@@ -226,16 +268,75 @@ def handle_trigger_virtual_tryon(garment_image_path: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 
+def handle_try_all_lower() -> dict:
+    """Try on all lower-body items sequentially and store results in pending_all_results."""
+    global last_person_image_path, pending_all_results, pending_status
+
+    if not last_person_image_path or not os.path.exists(last_person_image_path):
+        pending_status = "❌ 请先上传自拍"
+        return {"status": "error", "message": "未找到人物照片，请先上传您的自拍"}
+
+    if not vton_client.available:
+        pending_status = "❌ 试衣服务不可用"
+        return {"status": "error", "message": "试衣服务暂不可用（请确认 VTON_URL 服务已启动）"}
+
+    lower_items = [item for item in DEMO_ITEMS if item.category == "lower"]
+    if not lower_items:
+        pending_status = "❌ 暂无下装可试"
+        return {"status": "error", "message": "暂无下装可试"}
+
+    pending_all_results.clear()
+    completed, failed = [], []
+
+    for i, item in enumerate(lower_items, 1):
+        try:
+            prompt = f"a photo of a person wearing {_en_desc(item)}"
+            result_image = vton_client.try_on(
+                person_image_path=last_person_image_path,
+                clothes_image_path=item.image_path,
+                prompt=prompt,
+                preserve_face=True,
+                clothing_category="lower_body",
+            )
+            result_path = os.path.abspath(os.path.join(TEMP_DIR, f"tryon_all_{i}_{_ts()}.png"))
+            result_image.save(result_path)
+            pending_all_results.append((result_image, f"第{i}件：{item.name}"))
+            completed.append(item.name)
+        except Exception as e:
+            print(f"[VTON] try_all error for {item.name}: {traceback.format_exc()}")
+            failed.append(item.name)
+
+    total = len(lower_items)
+    if failed and not completed:
+        pending_status = f"❌ 三件全试失败（共 {total} 件）"
+    elif failed:
+        pending_status = f"⚠️ {len(completed)}/{total} 件试穿成功，{len(failed)} 件失败"
+    else:
+        pending_status = f"✅ 三件全试完成（共 {total} 件）"
+
+    result = {"status": "success", "completed": completed}
+    if failed:
+        result["failed"] = failed
+        result["message"] = f"三件下装试穿完成，效果已在左侧对比展示。（失败：{', '.join(failed)}）"
+    else:
+        result["message"] = f"三件下装已全部试穿完成，效果已在左侧对比展示，请主人欣赏～"
+    return result
+
+
 def handle_add_to_wardrobe() -> dict:
     global last_selected_item
 
     if not last_selected_item:
         return {"status": "error", "message": "还没有选择要纳入衣柜的单品"}
 
+    # Map ClothingItem.category → database clothing_type
+    wardrobe_type_map = {"upper": "upper", "lower": "lower", "dress": "dress"}
+    clothing_type = wardrobe_type_map.get(last_selected_item.category, "lower")
+
     try:
         item = add_item(
             name=last_selected_item.name,
-            clothing_type="lower",
+            clothing_type=clothing_type,
             image_path=last_selected_item.image_path,
         )
         return {
@@ -268,12 +369,13 @@ SYSTEM_PROMPT = """
 1. 收到「主人刚刚上传了一张自拍照片」后，消息里会附带今日穿搭信息：
    - 用2-3句话真诚夸奖主人的穿搭，结合提供的穿搭信息说出具体设计亮点
    - 夸完后自然结束，绝对不要主动提推荐衣服，等主人主动开口
-2. 主人主动说想看推荐/搭配/裤子时 → 调用 show_recommendations
+2. 主人主动说想看推荐/搭配/裙子/裤子/下装时 → 调用 show_recommendations
    - 工具返回后，把推荐结果融入对话，不要生硬列清单，要像在给朋友介绍：
-     "第一条是 [name]，[color]，[用一句话说为什么适合今天的场合]
-      第二条...
-      主人想试试哪一条？"
+     "第一件是 [name]，[color]，[用一句话说为什么适合今天的场合]
+      第二件...
+      主人想试试哪一件？"
 3. 主人说出选择 → 取对应 path，调用 trigger_virtual_tryon
+   主人说想全部试试/三件都试/一起看看效果 → 调用 try_all_lower（无需逐一列出路径）
 4. 试衣完成后，小镜结合场合和搭配自然评价效果（不要只说"好看"）
 5. 主人表示满意 → 调用 add_to_wardrobe，说"已帮您把这件收入数字衣柜啦～"
 
@@ -290,7 +392,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "show_recommendations",
-            "description": "展示为主人精选的搭配裤子（图片显示在左侧面板）。【重要】只有主人主动询问推荐/搭配/裤子时才能调用，照片上传后不能主动调用。",
+            "description": "展示为主人精选的搭配下装（裙子/裤子等，图片显示在左侧面板）。【重要】只有主人主动询问推荐/搭配/裙子/裤子/下装时才能调用，照片上传后不能主动调用。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -298,13 +400,13 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "trigger_virtual_tryon",
-            "description": "对选定裤子进行虚拟试衣，结果显示在左侧。主人指定好后调用。",
+            "description": "对选定的下装进行虚拟试衣，结果显示在左侧。主人指定好后调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "garment_image_path": {
                         "type": "string",
-                        "description": "要试穿的裤子图片路径，必须来自 show_recommendations 返回的 path 字段",
+                        "description": "要试穿的下装图片路径，必须来自 show_recommendations 返回的 path 字段",
                     }
                 },
                 "required": ["garment_image_path"],
@@ -315,7 +417,15 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "add_to_wardrobe",
-            "description": "将主人满意的裤子纳入数字衣柜。主人表示满意时调用。",
+            "description": "将主人满意的下装纳入数字衣柜。主人表示满意时调用。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "try_all_lower",
+            "description": "将所有推荐的下装依次虚拟试穿，结果以对比图展示在左侧。主人说想全部试试/三件都试/一起看看时调用。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -343,6 +453,7 @@ class CombinedAgent:
             "show_recommendations": lambda **_: handle_show_recommendations(),
             "trigger_virtual_tryon": handle_trigger_virtual_tryon,
             "add_to_wardrobe": lambda **_: handle_add_to_wardrobe(),
+            "try_all_lower": lambda **_: handle_try_all_lower(),
         }
 
     def reset(self):
@@ -529,52 +640,59 @@ def on_photo_upload(image: Image.Image, history: list, gallery_state: list):
 
 
 def chat_stream(message: str, history: list, gallery_state: list):
-    global pending_gallery, pending_result, pending_status, _chat_history
+    global pending_gallery, pending_result, pending_all_results, pending_status, _chat_history
 
     if not message or not message.strip():
-        yield history, gallery_state, gr.update(), "", "", history
+        yield history, gallery_state, gr.update(), gr.update(), "", "", history
         return
 
     # 同步服务端 _chat_history（以 Gradio state 传入值为准，避免脱节）
     _chat_history = list(history)
     _chat_history.append({"role": "user", "content": message})
-    yield _chat_history, gallery_state, gr.update(), "", "", _chat_history
+    yield _chat_history, gallery_state, gr.update(), gr.update(), "", "", _chat_history
     time.sleep(0.05)
 
     _chat_history.append({"role": "assistant", "content": "小镜正在思考..."})
-    yield _chat_history, gallery_state, gr.update(), "", "", _chat_history
+    yield _chat_history, gallery_state, gr.update(), gr.update(), "", "", _chat_history
 
     response = agent.chat(message)
     _chat_history[-1] = {"role": "assistant", "content": response}
 
-    # Flush gallery
+    # Flush rec gallery
     if pending_gallery:
         gallery_state = pending_gallery.copy()
         pending_gallery.clear()
 
-    # Flush tryon result
-    result_img = None
+    # Flush single tryon result (gr.update() = no-op so existing image isn't wiped)
+    result_img = gr.update()
     if pending_result is not None:
         result_img = pending_result
         pending_result = None
 
-    yield _chat_history, gallery_state, result_img, pending_status, "", _chat_history
+    # Flush all-lower results gallery (gr.update() = no-op so gallery isn't wiped)
+    all_results = gr.update()
+    if pending_all_results:
+        all_results = pending_all_results.copy()
+        pending_all_results.clear()
+
+    yield _chat_history, gallery_state, result_img, all_results, pending_status, "", _chat_history
     pending_status = ""
 
 
 def on_reset():
     global last_person_image_path, last_upper_seg_path, last_selected_item
-    global pending_gallery, pending_result, pending_status, _chat_history
+    global pending_gallery, pending_result, pending_all_results, pending_status, _chat_history
     _cleanup_temp()
     last_person_image_path = None
     last_upper_seg_path = None
     last_selected_item = None
     pending_gallery = []
     pending_result = None
+    pending_all_results.clear()
     pending_status = ""
     _chat_history = []
     agent.reset()
-    return [], [], None, "", "", []
+    return [], [], None, [], "", "", []
 
 
 # ============================================================
@@ -620,6 +738,12 @@ with gr.Blocks(title="✨ 智能试衣间 · 小镜") as demo:
             tryon_result = gr.Image(label="试衣结果", height=500, show_label=False)
             tryon_status = gr.Textbox(label="", lines=1, interactive=False, show_label=False)
 
+            gr.Markdown("#### ✨ 三件全试效果")
+            all_results_gallery = gr.Gallery(
+                label="三件效果对比", columns=3, height=350,
+                object_fit="contain", show_label=False,
+            )
+
             reset_btn = gr.Button("🔄 重新开始", size="sm")
 
         # ── Right panel ──
@@ -652,13 +776,13 @@ with gr.Blocks(title="✨ 智能试衣间 · 小镜") as demo:
     send_btn.click(
         fn=chat_stream,
         inputs=[msg_input, history_state, gallery_state],
-        outputs=[history_state, gallery_state, tryon_result, tryon_status, msg_input, chatbot],
+        outputs=[history_state, gallery_state, tryon_result, all_results_gallery, tryon_status, msg_input, chatbot],
         show_progress="hidden",
     )
     msg_input.submit(
         fn=chat_stream,
         inputs=[msg_input, history_state, gallery_state],
-        outputs=[history_state, gallery_state, tryon_result, tryon_status, msg_input, chatbot],
+        outputs=[history_state, gallery_state, tryon_result, all_results_gallery, tryon_status, msg_input, chatbot],
         show_progress="hidden",
     )
 
@@ -671,7 +795,7 @@ with gr.Blocks(title="✨ 智能试衣间 · 小镜") as demo:
 
     reset_btn.click(
         fn=on_reset,
-        outputs=[history_state, gallery_state, tryon_result, tryon_status, msg_input, chatbot],
+        outputs=[history_state, gallery_state, tryon_result, all_results_gallery, tryon_status, msg_input, chatbot],
     )
 
 
